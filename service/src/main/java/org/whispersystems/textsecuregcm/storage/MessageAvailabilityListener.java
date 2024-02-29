@@ -1,5 +1,5 @@
 /*
- * Copyright 2013-2020 Signal Messenger, LLC
+ * Copyright 2013-2021 Signal Messenger, LLC
  * SPDX-License-Identifier: AGPL-3.0-only
  */
 
@@ -12,9 +12,15 @@ package org.whispersystems.textsecuregcm.storage;
  */
 public interface MessageAvailabilityListener {
 
-    void handleNewMessagesAvailable();
+  /**
+   * @return whether the listener is still active. {@code false} indicates the listener can no longer handle messages
+   * and may be discarded
+   */
+  boolean handleNewMessagesAvailable();
 
-    void handleNewEphemeralMessageAvailable();
-
-    void handleMessagesPersisted();
+  /**
+   * @return whether the listener is still active. {@code false} indicates the listener can no longer handle messages
+   * and may be discarded
+   */
+  boolean handleMessagesPersisted();
 }

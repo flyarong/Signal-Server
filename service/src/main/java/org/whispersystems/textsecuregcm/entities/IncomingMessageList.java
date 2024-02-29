@@ -4,36 +4,44 @@
  */
 package org.whispersystems.textsecuregcm.entities;
 
+import static com.codahale.metrics.MetricRegistry.name;
+
+import com.fasterxml.jackson.annotation.JsonCreator;
 import com.fasterxml.jackson.annotation.JsonProperty;
 
-import javax.validation.Valid;
-import javax.validation.constraints.NotNull;
+import org.whispersystems.textsecuregcm.controllers.MessageController;
+
+import io.micrometer.core.instrument.Counter;
+import io.micrometer.core.instrument.Metrics;
+
 import java.util.List;
+import javax.validation.Valid;
+import javax.validation.constraints.AssertTrue;
+import javax.validation.constraints.NotNull;
 
-public class IncomingMessageList {
+public record IncomingMessageList(@NotNull @Valid List<@NotNull IncomingMessage> messages,
+                                  boolean online, boolean urgent, long timestamp) {
 
-  @JsonProperty
-  @NotNull
-  @Valid
-  private List<IncomingMessage> messages;
+  private static final Counter REJECT_DUPLICATE_RECIPIENT_COUNTER =
+      Metrics.counter(
+          name(MessageController.class, "rejectDuplicateRecipients"),
+          "multiRecipient", "false");
 
-  @JsonProperty
-  private long timestamp;
+  @JsonCreator
+  public IncomingMessageList(@JsonProperty("messages") @NotNull @Valid List<@NotNull IncomingMessage> messages,
+      @JsonProperty("online") boolean online,
+      @JsonProperty("urgent") Boolean urgent,
+      @JsonProperty("timestamp") long timestamp) {
 
-  @JsonProperty
-  private boolean online;
-
-  public IncomingMessageList() {}
-
-  public List<IncomingMessage> getMessages() {
-    return messages;
+    this(messages, online, urgent == null || urgent, timestamp);
   }
 
-  public long getTimestamp() {
-    return timestamp;
-  }
-
-  public boolean isOnline() {
-    return online;
+  @AssertTrue
+  public boolean hasNoDuplicateRecipients() {
+    boolean valid = messages.stream().filter(m -> m != null).map(IncomingMessage::destinationDeviceId).distinct().count() == messages.size();
+    if (!valid) {
+      REJECT_DUPLICATE_RECIPIENT_COUNTER.increment();
+    }
+    return valid;
   }
 }

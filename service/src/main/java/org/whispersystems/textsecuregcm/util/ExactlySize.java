@@ -1,28 +1,36 @@
 /*
- * Copyright 2013-2020 Signal Messenger, LLC
+ * Copyright 2013 Signal Messenger, LLC
  * SPDX-License-Identifier: AGPL-3.0-only
  */
 
 package org.whispersystems.textsecuregcm.util;
 
-import javax.validation.Constraint;
-import javax.validation.Payload;
+import static java.lang.annotation.ElementType.ANNOTATION_TYPE;
+import static java.lang.annotation.ElementType.CONSTRUCTOR;
+import static java.lang.annotation.ElementType.FIELD;
+import static java.lang.annotation.ElementType.METHOD;
+import static java.lang.annotation.ElementType.PARAMETER;
+import static java.lang.annotation.ElementType.TYPE_USE;
+import static java.lang.annotation.RetentionPolicy.RUNTIME;
+
 import java.lang.annotation.Documented;
 import java.lang.annotation.Retention;
 import java.lang.annotation.Target;
+import javax.validation.Constraint;
+import javax.validation.Payload;
 
-import static java.lang.annotation.ElementType.*;
-import static java.lang.annotation.ElementType.PARAMETER;
-import static java.lang.annotation.RetentionPolicy.RUNTIME;
-
-@Target({ FIELD, METHOD, PARAMETER, ANNOTATION_TYPE })
+@Target({ FIELD, METHOD, CONSTRUCTOR, PARAMETER, ANNOTATION_TYPE, TYPE_USE })
 @Retention(RUNTIME)
-@Constraint(validatedBy = ExactlySizeValidator.class)
+@Constraint(validatedBy = {
+    ExactlySizeValidatorForString.class,
+    ExactlySizeValidatorForArraysOfByte.class,
+    ExactlySizeValidatorForCollection.class,
+    ExactlySizeValidatorForSecretBytes.class,
+})
 @Documented
 public @interface ExactlySize {
 
-  String message() default "{org.whispersystems.textsecuregcm.util.ExactlySize." +
-      "message}";
+  String message() default "{org.whispersystems.textsecuregcm.util.ExactlySize.message}";
 
   Class<?>[] groups() default { };
 

@@ -1,47 +1,93 @@
 /*
- * Copyright 2013-2020 Signal Messenger, LLC
+ * Copyright 2013 Signal Messenger, LLC
  * SPDX-License-Identifier: AGPL-3.0-only
  */
 package org.whispersystems.textsecuregcm.util;
 
+import com.google.i18n.phonenumbers.NumberParseException;
 import com.google.i18n.phonenumbers.PhoneNumberUtil;
-
-import java.io.UnsupportedEncodingException;
-import java.net.URLEncoder;
-import java.security.MessageDigest;
-import java.security.NoSuchAlgorithmException;
-import java.security.SecureRandom;
+import com.google.i18n.phonenumbers.PhoneNumberUtil.PhoneNumberFormat;
+import com.google.i18n.phonenumbers.Phonenumber.PhoneNumber;
 import java.time.Clock;
 import java.time.Duration;
-import java.time.temporal.ChronoField;
-import java.util.Arrays;
-import java.util.Map;
+import java.util.ArrayList;
+import java.util.Collection;
+import java.util.Collections;
+import java.util.HashSet;
+import java.util.List;
+import java.util.Locale;
+import java.util.Locale.LanguageRange;
+import java.util.Optional;
+import java.util.Random;
+import java.util.Set;
 import java.util.concurrent.TimeUnit;
+import java.util.function.Function;
+import java.util.random.RandomGenerator;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
+import javax.ws.rs.core.Response;
+
+import org.apache.commons.lang3.StringUtils;
+
 public class Util {
+
+  private static final RandomGenerator rng = new Random();
 
   private static final Pattern COUNTRY_CODE_PATTERN = Pattern.compile("^\\+([17]|2[07]|3[0123469]|4[013456789]|5[12345678]|6[0123456]|8[1246]|9[0123458]|\\d{3})");
 
-  public static byte[] getContactToken(String number) {
-    try {
-      MessageDigest digest    = MessageDigest.getInstance("SHA1");
-      byte[]        result    = digest.digest(number.getBytes());
-      byte[]        truncated = Util.truncate(result, 10);
+  private static final PhoneNumberUtil PHONE_NUMBER_UTIL = PhoneNumberUtil.getInstance();
 
-      return truncated;
-    } catch (NoSuchAlgorithmException e) {
-      throw new AssertionError(e);
+  public static final Runnable NOOP = () -> {};
+
+  // Use `CompletableFuture#thenApply(ASYNC_EMPTY_RESPONSE) to convert futures to
+  // CompletableFuture<Response> instead of using NOOP to convert them to CompletableFuture<Void>
+  // for jersey controllers; https://github.com/eclipse-ee4j/jersey/issues/3901 causes controllers
+  // returning Void futures to behave differently than synchronous controllers returning void
+  public static final Function<Object, Response> ASYNC_EMPTY_RESPONSE = ignored -> Response.noContent().build();
+
+  /**
+   * Checks that the given number is a valid, E164-normalized phone number.
+   *
+   * @param number the number to check
+   *
+   * @throws ImpossiblePhoneNumberException if the given number is not a valid phone number at all
+   * @throws NonNormalizedPhoneNumberException if the given number is a valid phone number, but isn't E164-normalized
+   */
+  public static void requireNormalizedNumber(final String number) throws ImpossiblePhoneNumberException, NonNormalizedPhoneNumberException {
+    if (!PHONE_NUMBER_UTIL.isPossibleNumber(number, null)) {
+      throw new ImpossiblePhoneNumberException();
     }
-  }
 
-  public static String getEncodedContactToken(String number) {
-    return Base64.encodeBytesWithoutPadding(getContactToken(number));
-  }
+    try {
+      final PhoneNumber inputNumber = PHONE_NUMBER_UTIL.parse(number, null);
 
-  public static boolean isValidNumber(String number) {
-    return number.matches("^\\+[0-9]+") && PhoneNumberUtil.getInstance().isPossibleNumber(number, null);
+      // For normalization, we want to format from a version parsed with the country code removed.
+      // This handles some cases of "possible", but non-normalized input numbers with a doubled country code, that is
+      // with the format "+{country code} {country code} {national number}"
+      final int countryCode = inputNumber.getCountryCode();
+      final String region = PHONE_NUMBER_UTIL.getRegionCodeForCountryCode(countryCode);
+
+      final PhoneNumber normalizedNumber = switch (region) {
+        // the country code has no associated region. Be lenient (and simple) and accept the input number
+        case "ZZ", "001" -> inputNumber;
+        default -> {
+          final String maybeLeadingZero =
+              inputNumber.hasItalianLeadingZero() && inputNumber.isItalianLeadingZero() ? "0" : "";
+          yield PHONE_NUMBER_UTIL.parse(
+              maybeLeadingZero + inputNumber.getNationalNumber(), region);
+        }
+      };
+
+      final String normalizedE164 = PHONE_NUMBER_UTIL.format(normalizedNumber,
+          PhoneNumberFormat.E164);
+
+      if (!number.equals(normalizedE164)) {
+        throw new NonNormalizedPhoneNumberException(number, normalizedE164);
+      }
+    } catch (final NumberParseException e) {
+      throw new ImpossiblePhoneNumberException(e);
+    }
   }
 
   public static String getCountryCode(String number) {
@@ -49,6 +95,15 @@ public class Util {
 
     if (matcher.find()) return matcher.group(1);
     else                return "0";
+  }
+
+  public static String getRegion(final String number) {
+    try {
+      final PhoneNumber phoneNumber = PHONE_NUMBER_UTIL.parse(number, null);
+      return StringUtils.defaultIfBlank(PHONE_NUMBER_UTIL.getRegionCodeForNumber(phoneNumber), "ZZ");
+    } catch (final NumberParseException e) {
+      return "ZZ";
+    }
   }
 
   public static String getNumberPrefix(String number) {
@@ -59,91 +114,11 @@ public class Util {
     return number.substring(0, 1 + countryCode.length() + prefixLength);
   }
 
-  public static String encodeFormParams(Map<String, String> params) {
-    try {
-      StringBuffer buffer = new StringBuffer();
-
-      for (String key : params.keySet()) {
-        buffer.append(String.format("%s=%s",
-                                    URLEncoder.encode(key, "UTF-8"),
-                                    URLEncoder.encode(params.get(key), "UTF-8")));
-        buffer.append("&");
-      }
-
-      buffer.deleteCharAt(buffer.length()-1);
-      return buffer.toString();
-    } catch (UnsupportedEncodingException e) {
-      throw new AssertionError(e);
-    }
-  }
-
-  public static boolean isEmpty(String param) {
-    return param == null || param.length() == 0;
-  }
-
-  public static byte[] combine(byte[] one, byte[] two, byte[] three, byte[] four) {
-    byte[] combined = new byte[one.length + two.length + three.length + four.length];
-    System.arraycopy(one, 0, combined, 0, one.length);
-    System.arraycopy(two, 0, combined, one.length, two.length);
-    System.arraycopy(three, 0, combined, one.length + two.length, three.length);
-    System.arraycopy(four, 0, combined, one.length + two.length + three.length, four.length);
-
-    return combined;
-  }
-
   public static byte[] truncate(byte[] element, int length) {
     byte[] result = new byte[length];
     System.arraycopy(element, 0, result, 0, result.length);
 
     return result;
-  }
-
-
-  public static byte[][] split(byte[] input, int firstLength, int secondLength) {
-    byte[][] parts = new byte[2][];
-
-    parts[0] = new byte[firstLength];
-    System.arraycopy(input, 0, parts[0], 0, firstLength);
-
-    parts[1] = new byte[secondLength];
-    System.arraycopy(input, firstLength, parts[1], 0, secondLength);
-
-    return parts;
-  }
-
-  public static byte[][] split(byte[] input, int firstLength, int secondLength, int thirdLength, int fourthLength) {
-    byte[][] parts = new byte[4][];
-
-    parts[0] = new byte[firstLength];
-    System.arraycopy(input, 0, parts[0], 0, firstLength);
-
-    parts[1] = new byte[secondLength];
-    System.arraycopy(input, firstLength, parts[1], 0, secondLength);
-
-    parts[2] = new byte[thirdLength];
-    System.arraycopy(input, firstLength + secondLength, parts[2], 0, thirdLength);
-
-    parts[3] = new byte[fourthLength];
-    System.arraycopy(input, firstLength + secondLength + thirdLength, parts[3], 0, fourthLength);
-
-    return parts;
-  }
-
-  public static byte[] generateSecretBytes(int size) {
-    byte[] data = new byte[size];
-    new SecureRandom().nextBytes(data);
-    return data;
-  }
-
-  public static int toIntExact(long value) {
-    if ((int)value != value) {
-      throw new ArithmeticException("integer overflow");
-    }
-    return (int)value;
-  }
-
-  public static int currentDaysSinceEpoch() {
-    return Util.toIntExact(System.currentTimeMillis() / 1000 / 60 / 60 / 24);
   }
 
   public static void sleep(long i) {
@@ -152,40 +127,88 @@ public class Util {
     } catch (InterruptedException ie) {}
   }
 
-  public static void wait(Object object) {
-    try {
-      object.wait();
-    } catch (InterruptedException e) {
-      throw new AssertionError(e);
-    }
-  }
-
-  public static void wait(Object object, long timeoutMs) {
-    try {
-      object.wait(timeoutMs);
-    } catch (InterruptedException e) {
-      throw new AssertionError(e);
-    }
-  }
-
-  public static int hashCode(Object... objects) {
-    return Arrays.hashCode(objects);
-  }
-
-  public static boolean isEquals(Object first, Object second) {
-    return (first == null && second == null) || (first == second) || (first != null && first.equals(second));
-  }
-
   public static long todayInMillis() {
     return todayInMillis(Clock.systemUTC());
   }
 
   public static long todayInMillis(Clock clock) {
-    return TimeUnit.DAYS.toMillis(TimeUnit.MILLISECONDS.toDays(clock.instant().toEpochMilli()));
+    return TimeUnit.DAYS.toMillis(TimeUnit.MILLISECONDS.toDays(clock.millis()));
   }
 
   public static long todayInMillisGivenOffsetFromNow(Clock clock, Duration offset) {
-    final long currentTimeSeconds = offset.addTo(clock.instant()).getLong(ChronoField.INSTANT_SECONDS);
-    return TimeUnit.DAYS.toMillis(TimeUnit.SECONDS.toDays(currentTimeSeconds));
+    final long ms = offset.toMillis() + clock.millis();
+    return TimeUnit.DAYS.toMillis(TimeUnit.MILLISECONDS.toDays(ms));
+  }
+
+  public static Optional<String> findBestLocale(List<LanguageRange> priorityList, Collection<String> supportedLocales) {
+    return Optional.ofNullable(Locale.lookupTag(priorityList, supportedLocales));
+  }
+
+  /**
+   * Map ints to non-negative ints.
+   * <br>
+   * Unlike Math.abs this method handles Integer.MIN_VALUE correctly.
+   *
+   * @param n any int value
+   * @return an int value guaranteed to be non-negative
+   */
+  public static int ensureNonNegativeInt(int n) {
+    return n == Integer.MIN_VALUE ? 0 : Math.abs(n);
+  }
+
+  /**
+   * Map longs to non-negative longs.
+   * <br>
+   * Unlike Math.abs this method handles Long.MIN_VALUE correctly.
+   *
+   * @param n any long value
+   * @return a long value guaranteed to be non-negative
+   */
+  public static long ensureNonNegativeLong(long n) {
+    return n == Long.MIN_VALUE ? 0 : Math.abs(n);
+  }
+
+  /**
+   * Chooses min(values.size(), n) random values.
+   * <br>
+   * Copies the input Array - use for small lists only or for when n/values.size() is near 1.
+   */
+  public static <E> List<E> randomNOf(List<E> values, int n) {
+    if(values == null || values.isEmpty()) {
+      return Collections.emptyList();
+    }
+
+    List<E> result = new ArrayList<>(values);
+    if(n >= values.size()) {
+      return result;
+    }
+
+    Collections.shuffle(result);
+    return result.stream().limit(n).toList();
+  }
+
+  /**
+   * Chooses min(values.size(), n) random values. Return value is in stable order from input values.
+   * Not uniform random, but good enough.
+   * <br>
+   * Does NOT copy the input Array.
+   */
+  public static <E> List<E> randomNOfStable(List<E> values, int n) {
+    if(values == null || values.isEmpty()) {
+      return Collections.emptyList();
+    }
+    if(n >= values.size()) {
+      return values;
+    }
+
+    Set<Integer> indices = new HashSet<>(rng.ints(0, values.size()).distinct().limit(n).boxed().toList());
+    List<E> result = new ArrayList<E>(n);
+    for(int i = 0; i < values.size() && result.size() < n; i++) {
+      if(indices.contains(i)) {
+        result.add(values.get(i));
+      }
+    }
+
+    return result;
   }
 }

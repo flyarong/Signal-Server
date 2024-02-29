@@ -1,122 +1,98 @@
 /*
- * Copyright 2013-2020 Signal Messenger, LLC
+ * Copyright 2023 Signal Messenger, LLC
  * SPDX-License-Identifier: AGPL-3.0-only
  */
+
 package org.whispersystems.textsecuregcm.limits;
 
-import com.codahale.metrics.Meter;
-import com.codahale.metrics.MetricRegistry;
-import com.codahale.metrics.SharedMetricRegistries;
-import com.codahale.metrics.Timer;
-import com.fasterxml.jackson.core.JsonProcessingException;
-import com.fasterxml.jackson.databind.ObjectMapper;
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
-import org.whispersystems.textsecuregcm.configuration.RateLimitsConfiguration.RateLimitConfiguration;
+import java.util.UUID;
+import java.util.concurrent.CompletionStage;
 import org.whispersystems.textsecuregcm.controllers.RateLimitExceededException;
-import org.whispersystems.textsecuregcm.redis.FaultTolerantRedisCluster;
-import org.whispersystems.textsecuregcm.util.Constants;
-import org.whispersystems.textsecuregcm.util.SystemMapper;
+import reactor.core.publisher.Mono;
 
-import java.io.IOException;
-import java.time.Duration;
+public interface RateLimiter {
 
-import static com.codahale.metrics.MetricRegistry.name;
+  void validate(String key, int amount) throws RateLimitExceededException;
 
-public class RateLimiter {
+  CompletionStage<Void> validateAsync(String key, int amount);
 
-  private final Logger       logger = LoggerFactory.getLogger(RateLimiter.class);
-  private final ObjectMapper mapper = SystemMapper.getMapper();
+  boolean hasAvailablePermits(String key, int permits);
 
-  private   final Meter                     meter;
-  private   final Timer                     validateTimer;
-  protected final FaultTolerantRedisCluster cacheCluster;
-  protected final String                    name;
-  private   final int                       bucketSize;
-  private   final double                    leakRatePerMinute;
-  private   final double                    leakRatePerMillis;
-  private   final boolean                   reportLimits;
+  CompletionStage<Boolean> hasAvailablePermitsAsync(String key, int amount);
 
-  public RateLimiter(FaultTolerantRedisCluster cacheCluster, String name,
-                     int bucketSize, double leakRatePerMinute)
-  {
-    this(cacheCluster, name, bucketSize, leakRatePerMinute, false);
-  }
+  void clear(String key);
 
-  public RateLimiter(FaultTolerantRedisCluster cacheCluster, String name,
-                     int bucketSize, double leakRatePerMinute,
-                     boolean reportLimits)
-  {
-    MetricRegistry metricRegistry = SharedMetricRegistries.getOrCreate(Constants.METRICS_NAME);
+  CompletionStage<Void> clearAsync(String key);
 
-    this.meter                  = metricRegistry.meter(name(getClass(), name, "exceeded"));
-    this.validateTimer          = metricRegistry.timer(name(getClass(), name, "validate"));
-    this.cacheCluster           = cacheCluster;
-    this.name                   = name;
-    this.bucketSize             = bucketSize;
-    this.leakRatePerMinute      = leakRatePerMinute;
-    this.leakRatePerMillis      = leakRatePerMinute / (60.0 * 1000.0);
-    this.reportLimits           = reportLimits;
-  }
+  RateLimiterConfig config();
 
-  public void validate(String key, int amount) throws RateLimitExceededException {
-    try (final Timer.Context ignored = validateTimer.time()) {
-      LeakyBucket bucket = getBucket(key);
-
-      if (bucket.add(amount)) {
-        setBucket(key, bucket);
-      } else {
-        meter.mark();
-        throw new RateLimitExceededException(key + " , " + amount, bucket.getTimeUntilSpaceAvailable(amount));
-      }
-    }
-  }
-
-  public void validate(String key) throws RateLimitExceededException {
+  default void validate(final String key) throws RateLimitExceededException {
     validate(key, 1);
   }
 
-  public void clear(String key) {
-    cacheCluster.useCluster(connection -> connection.sync().del(getBucketName(key)));
+  default void validate(final UUID accountUuid) throws RateLimitExceededException {
+    validate(accountUuid.toString());
   }
 
-  public int getBucketSize() {
-    return bucketSize;
+  default void validate(final UUID accountUuid, final int permits) throws RateLimitExceededException {
+    validate(accountUuid.toString(), permits);
   }
 
-  public double getLeakRatePerMinute() {
-    return leakRatePerMinute;
+  default void validate(final UUID srcAccountUuid, final UUID dstAccountUuid) throws RateLimitExceededException {
+    validate(srcAccountUuid.toString() + "__" + dstAccountUuid.toString());
   }
 
-  private void setBucket(String key, LeakyBucket bucket) {
+  default CompletionStage<Void> validateAsync(final String key) {
+    return validateAsync(key, 1);
+  }
+
+  default CompletionStage<Void> validateAsync(final UUID accountUuid) {
+    return validateAsync(accountUuid.toString());
+  }
+
+  default CompletionStage<Void> validateAsync(final UUID srcAccountUuid, final UUID dstAccountUuid) {
+    return validateAsync(srcAccountUuid.toString() + "__" + dstAccountUuid.toString());
+  }
+
+  default Mono<Void> validateReactive(final String key) {
+    return Mono.fromFuture(() -> validateAsync(key).toCompletableFuture());
+  }
+
+  default Mono<Void> validateReactive(final UUID accountUuid) {
+    return validateReactive(accountUuid.toString());
+  }
+
+  default boolean hasAvailablePermits(final UUID accountUuid, final int permits) {
+    return hasAvailablePermits(accountUuid.toString(), permits);
+  }
+
+  default CompletionStage<Boolean> hasAvailablePermitsAsync(final UUID accountUuid, final int permits) {
+    return hasAvailablePermitsAsync(accountUuid.toString(), permits);
+  }
+
+  default void clear(final UUID accountUuid) {
+    clear(accountUuid.toString());
+  }
+
+  default CompletionStage<Void> clearAsync(final UUID accountUuid) {
+    return clearAsync(accountUuid.toString());
+  }
+
+  /**
+   * If the wrapped {@code validate()} call throws a {@link RateLimitExceededException}, it will adapt it to ensure that
+   * {@link RateLimitExceededException#isLegacy()} returns {@code false}
+   */
+  static void adaptLegacyException(final RateLimitValidator validator) throws RateLimitExceededException {
     try {
-      final String serialized = bucket.serialize(mapper);
-
-      cacheCluster.useCluster(connection -> connection.sync().setex(getBucketName(key), (int) Math.ceil((bucketSize / leakRatePerMillis) / 1000), serialized));
-    } catch (JsonProcessingException e) {
-      throw new IllegalArgumentException(e);
+      validator.validate();
+    } catch (final RateLimitExceededException e) {
+      throw new RateLimitExceededException(e.getRetryDuration().orElse(null), false);
     }
   }
 
-  private LeakyBucket getBucket(String key) {
-    try {
-      final String serialized = cacheCluster.withCluster(connection -> connection.sync().get(getBucketName(key)));
+  @FunctionalInterface
+  interface RateLimitValidator {
 
-      if (serialized != null) {
-        return LeakyBucket.fromSerialized(mapper, serialized);
-      }
-    } catch (IOException e) {
-      logger.warn("Deserialization error", e);
-    }
-
-    return new LeakyBucket(bucketSize, leakRatePerMillis);
-  }
-
-  private String getBucketName(String key) {
-    return "leaky_bucket::" + name + "::" + key;
-  }
-
-  public boolean hasConfiguration(final RateLimitConfiguration configuration) {
-    return bucketSize == configuration.getBucketSize() && leakRatePerMinute == configuration.getLeakRatePerMinute();
+    void validate() throws RateLimitExceededException;
   }
 }

@@ -4,66 +4,53 @@
  */
 package org.whispersystems.textsecuregcm.entities;
 
-import com.fasterxml.jackson.annotation.JsonProperty;
+import com.google.protobuf.ByteString;
+import java.util.Base64;
+import javax.annotation.Nullable;
+import org.apache.commons.lang3.StringUtils;
+import org.whispersystems.textsecuregcm.identity.AciServiceIdentifier;
+import org.whispersystems.textsecuregcm.identity.ServiceIdentifier;
+import org.whispersystems.textsecuregcm.storage.Account;
 
-public class IncomingMessage {
+public record IncomingMessage(int type, byte destinationDeviceId, int destinationRegistrationId, String content) {
 
-  @JsonProperty
-  private int    type;
+  public MessageProtos.Envelope toEnvelope(final ServiceIdentifier destinationIdentifier,
+      @Nullable Account sourceAccount,
+      @Nullable Byte sourceDeviceId,
+      final long timestamp,
+      final boolean story,
+      final boolean urgent,
+      @Nullable byte[] reportSpamToken) {
 
-  @JsonProperty
-  private String destination;
+    final MessageProtos.Envelope.Type envelopeType = MessageProtos.Envelope.Type.forNumber(type());
 
-  @JsonProperty
-  private long   destinationDeviceId = 1;
+    if (envelopeType == null) {
+      throw new IllegalArgumentException("Bad envelope type: " + type());
+    }
 
-  @JsonProperty
-  private int destinationRegistrationId;
+    final MessageProtos.Envelope.Builder envelopeBuilder = MessageProtos.Envelope.newBuilder();
 
-  @JsonProperty
-  private String body;
+    envelopeBuilder.setType(envelopeType)
+        .setTimestamp(timestamp)
+        .setServerTimestamp(System.currentTimeMillis())
+        .setDestinationUuid(destinationIdentifier.toServiceIdentifierString())
+        .setStory(story)
+        .setUrgent(urgent);
 
-  @JsonProperty
-  private String content;
+    if (sourceAccount != null && sourceDeviceId != null) {
+      envelopeBuilder
+          .setSourceUuid(new AciServiceIdentifier(sourceAccount.getUuid()).toServiceIdentifierString())
+          .setSourceDevice(sourceDeviceId.intValue());
+    }
 
-  @JsonProperty
-  private String relay;
+    if (reportSpamToken != null) {
+      envelopeBuilder.setReportSpamToken(ByteString.copyFrom(reportSpamToken));
+    }
 
-  @JsonProperty
-  private long   timestamp; // deprecated
+    if (StringUtils.isNotEmpty(content())) {
+      envelopeBuilder.setContent(ByteString.copyFrom(Base64.getDecoder().decode(content())));
+    }
 
-  @JsonProperty
-  private Boolean online; // use IncomingMessageList.online - this is a temporary adaptation for older clients
-
-  public String getDestination() {
-    return destination;
-  }
-
-  public String getBody() {
-    return body;
-  }
-
-  public int getType() {
-    return type;
-  }
-
-  public String getRelay() {
-    return relay;
-  }
-
-  public long getDestinationDeviceId() {
-    return destinationDeviceId;
-  }
-
-  public int getDestinationRegistrationId() {
-    return destinationRegistrationId;
-  }
-
-  public String getContent() {
-    return content;
-  }
-
-  public Boolean isOnline() {
-    return online;
+    return envelopeBuilder.build();
   }
 }

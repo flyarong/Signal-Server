@@ -5,47 +5,22 @@
 
 package org.whispersystems.textsecuregcm.entities;
 
-import com.fasterxml.jackson.annotation.JsonProperty;
-
+import io.swagger.v3.oas.annotations.media.Schema;
 import java.util.Map;
 
-public class AttachmentDescriptorV3 {
+public record AttachmentDescriptorV3(
+    @Schema(description = """
+        Indicates the CDN type. 2 in the v3 API, 2 or 3 in the v4 API.
+        2 indicates resumable uploads using GCS,
+        3 indicates resumable uploads using TUS
+        """)
+    int cdn,
+    @Schema(description = "The location within the specified cdn where the finished upload can be found")
+    String key,
+    @Schema(description = "A map of headers to include with all upload requests. Potentially contains time-limited upload credentials")
+    Map<String, String> headers,
 
-  @JsonProperty
-  private int cdn;
+    @Schema(description = "The URL to upload to with the appropriate protocol")
+    String signedUploadLocation) {
 
-  @JsonProperty
-  private String key;
-
-  @JsonProperty
-  private Map<String, String> headers;
-
-  @JsonProperty
-  private String signedUploadLocation;
-
-  public AttachmentDescriptorV3() {
-  }
-
-  public AttachmentDescriptorV3(int cdn, String key, Map<String, String> headers, String signedUploadLocation) {
-    this.cdn                  = cdn;
-    this.key                  = key;
-    this.headers              = headers;
-    this.signedUploadLocation = signedUploadLocation;
-  }
-
-  public int getCdn() {
-    return cdn;
-  }
-
-  public String getKey() {
-    return key;
-  }
-
-  public Map<String, String> getHeaders() {
-    return headers;
-  }
-
-  public String getSignedUploadLocation() {
-    return signedUploadLocation;
-  }
 }

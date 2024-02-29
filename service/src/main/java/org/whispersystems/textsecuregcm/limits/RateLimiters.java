@@ -1,237 +1,235 @@
 /*
- * Copyright 2013-2020 Signal Messenger, LLC
+ * Copyright 2013 Signal Messenger, LLC
  * SPDX-License-Identifier: AGPL-3.0-only
  */
 package org.whispersystems.textsecuregcm.limits;
 
 
-import java.util.concurrent.atomic.AtomicReference;
-import org.whispersystems.textsecuregcm.configuration.RateLimitsConfiguration;
-import org.whispersystems.textsecuregcm.configuration.RateLimitsConfiguration.CardinalityRateLimitConfiguration;
-import org.whispersystems.textsecuregcm.configuration.RateLimitsConfiguration.RateLimitConfiguration;
+import com.google.common.annotations.VisibleForTesting;
+import java.time.Clock;
+import java.time.Duration;
+import java.util.Map;
+import org.whispersystems.textsecuregcm.configuration.dynamic.DynamicConfiguration;
+import org.whispersystems.textsecuregcm.redis.ClusterLuaScript;
 import org.whispersystems.textsecuregcm.redis.FaultTolerantRedisCluster;
 import org.whispersystems.textsecuregcm.storage.DynamicConfigurationManager;
 
-public class RateLimiters {
+public class RateLimiters extends BaseRateLimiters<RateLimiters.For> {
 
-  private final RateLimiter smsDestinationLimiter;
-  private final RateLimiter voiceDestinationLimiter;
-  private final RateLimiter voiceDestinationDailyLimiter;
-  private final RateLimiter smsVoiceIpLimiter;
-  private final RateLimiter smsVoicePrefixLimiter;
-  private final RateLimiter autoBlockLimiter;
-  private final RateLimiter verifyLimiter;
-  private final RateLimiter pinLimiter;
+  public enum For implements RateLimiterDescriptor {
+    BACKUP_AUTH_CHECK("backupAuthCheck", false, new RateLimiterConfig(100, Duration.ofMinutes(15))),
+    SMS_DESTINATION("smsDestination", false, new RateLimiterConfig(2, Duration.ofSeconds(30))),
+    VOICE_DESTINATION("voxDestination", false, new RateLimiterConfig(2, Duration.ofMinutes(2))),
+    VOICE_DESTINATION_DAILY("voxDestinationDaily", false, new RateLimiterConfig(10, Duration.ofMinutes(144))),
+    SMS_VOICE_IP("smsVoiceIp", false, new RateLimiterConfig(1000, Duration.ofMillis(60))),
+    SMS_VOICE_PREFIX("smsVoicePrefix", false, new RateLimiterConfig(1000, Duration.ofMillis(60))),
+    VERIFY("verify", false, new RateLimiterConfig(6, Duration.ofSeconds(30))),
+    PIN("pin", false, new RateLimiterConfig(10, Duration.ofDays(1))),
+    ATTACHMENT("attachmentCreate", false, new RateLimiterConfig(50, Duration.ofMillis(1200))),
+    PRE_KEYS("prekeys", false, new RateLimiterConfig(6, Duration.ofMinutes(10))),
+    MESSAGES("messages", false, new RateLimiterConfig(60, Duration.ofSeconds(1))),
+    STORIES("stories", false, new RateLimiterConfig(5_000, Duration.ofSeconds(8))),
+    ALLOCATE_DEVICE("allocateDevice", false, new RateLimiterConfig(2, Duration.ofMinutes(2))),
+    VERIFY_DEVICE("verifyDevice", false, new RateLimiterConfig(6, Duration.ofMinutes(10))),
+    TURN("turnAllocate", false, new RateLimiterConfig(60, Duration.ofSeconds(1))),
+    PROFILE("profile", false, new RateLimiterConfig(4320, Duration.ofSeconds(20))),
+    STICKER_PACK("stickerPack", false, new RateLimiterConfig(50, Duration.ofMinutes(72))),
+    USERNAME_LOOKUP("usernameLookup", false, new RateLimiterConfig(100, Duration.ofMinutes(15))),
+    USERNAME_SET("usernameSet", false, new RateLimiterConfig(100, Duration.ofMinutes(15))),
+    USERNAME_RESERVE("usernameReserve", false, new RateLimiterConfig(100, Duration.ofMinutes(15))),
+    USERNAME_LINK_OPERATION("usernameLinkOperation", false, new RateLimiterConfig(10, Duration.ofMinutes(1))),
+    USERNAME_LINK_LOOKUP_PER_IP("usernameLinkLookupPerIp", false, new RateLimiterConfig(100, Duration.ofSeconds(15))),
+    CHECK_ACCOUNT_EXISTENCE("checkAccountExistence", false, new RateLimiterConfig(1000, Duration.ofSeconds(4))),
+    REGISTRATION("registration", false, new RateLimiterConfig(6, Duration.ofSeconds(30))),
+    VERIFICATION_PUSH_CHALLENGE("verificationPushChallenge", false, new RateLimiterConfig(5, Duration.ofSeconds(30))),
+    VERIFICATION_CAPTCHA("verificationCaptcha", false, new RateLimiterConfig(10, Duration.ofSeconds(30))),
+    RATE_LIMIT_RESET("rateLimitReset", true, new RateLimiterConfig(2, Duration.ofHours(12))),
+    RECAPTCHA_CHALLENGE_ATTEMPT("recaptchaChallengeAttempt", true, new RateLimiterConfig(10, Duration.ofMinutes(144))),
+    RECAPTCHA_CHALLENGE_SUCCESS("recaptchaChallengeSuccess", true, new RateLimiterConfig(2, Duration.ofHours(12))),
+    SET_BACKUP_ID("setBackupId", true, new RateLimiterConfig(2, Duration.ofDays(7))),
+    PUSH_CHALLENGE_ATTEMPT("pushChallengeAttempt", true, new RateLimiterConfig(10, Duration.ofMinutes(144))),
+    PUSH_CHALLENGE_SUCCESS("pushChallengeSuccess", true, new RateLimiterConfig(2, Duration.ofHours(12))),
+    GET_CALLING_RELAYS("getCallingRelays", false, new RateLimiterConfig(100, Duration.ofMinutes(10))),
+    CREATE_CALL_LINK("createCallLink", false, new RateLimiterConfig(100, Duration.ofMinutes(15))),
+    INBOUND_MESSAGE_BYTES("inboundMessageBytes", true, new RateLimiterConfig(128 * 1024 * 1024, Duration.ofNanos(500_000))),
+    EXTERNAL_SERVICE_CREDENTIALS("externalServiceCredentials", true, new RateLimiterConfig(100, Duration.ofMinutes(15))),
+    ;
 
-  private final RateLimiter attachmentLimiter;
-  private final RateLimiter preKeysLimiter;
-  private final RateLimiter messagesLimiter;
+    private final String id;
 
-  private final RateLimiter allocateDeviceLimiter;
-  private final RateLimiter verifyDeviceLimiter;
+    private final boolean dynamic;
 
-  private final RateLimiter turnLimiter;
+    private final RateLimiterConfig defaultConfig;
 
-  private final RateLimiter profileLimiter;
-  private final RateLimiter stickerPackLimiter;
-  private final RateLimiter usernameLookupLimiter;
-  private final RateLimiter usernameSetLimiter;
+    For(final String id, final boolean dynamic, final RateLimiterConfig defaultConfig) {
+      this.id = id;
+      this.dynamic = dynamic;
+      this.defaultConfig = defaultConfig;
+    }
 
-  private final AtomicReference<CardinalityRateLimiter> unsealedSenderLimiter;
-  private final AtomicReference<RateLimiter> unsealedIpLimiter;
+    public String id() {
+      return id;
+    }
 
-  private final FaultTolerantRedisCluster   cacheCluster;
-  private final DynamicConfigurationManager dynamicConfig;
+    @Override
+    public boolean isDynamic() {
+      return dynamic;
+    }
 
-  public RateLimiters(RateLimitsConfiguration config, DynamicConfigurationManager dynamicConfig, FaultTolerantRedisCluster cacheCluster) {
-    this.cacheCluster  = cacheCluster;
-    this.dynamicConfig = dynamicConfig;
-
-    this.smsDestinationLimiter = new RateLimiter(cacheCluster, "smsDestination",
-                                                 config.getSmsDestination().getBucketSize(),
-                                                 config.getSmsDestination().getLeakRatePerMinute());
-
-    this.voiceDestinationLimiter = new RateLimiter(cacheCluster, "voxDestination",
-                                                   config.getVoiceDestination().getBucketSize(),
-                                                   config.getVoiceDestination().getLeakRatePerMinute());
-
-    this.voiceDestinationDailyLimiter = new RateLimiter(cacheCluster, "voxDestinationDaily",
-                                                        config.getVoiceDestinationDaily().getBucketSize(),
-                                                        config.getVoiceDestinationDaily().getLeakRatePerMinute());
-
-    this.smsVoiceIpLimiter = new RateLimiter(cacheCluster, "smsVoiceIp",
-                                             config.getSmsVoiceIp().getBucketSize(),
-                                             config.getSmsVoiceIp().getLeakRatePerMinute());
-
-    this.smsVoicePrefixLimiter = new RateLimiter(cacheCluster, "smsVoicePrefix",
-                                                 config.getSmsVoicePrefix().getBucketSize(),
-                                                 config.getSmsVoicePrefix().getLeakRatePerMinute());
-
-    this.autoBlockLimiter = new RateLimiter(cacheCluster, "autoBlock",
-                                            config.getAutoBlock().getBucketSize(),
-                                            config.getAutoBlock().getLeakRatePerMinute());
-
-    this.verifyLimiter = new LockingRateLimiter(cacheCluster, "verify",
-                                                config.getVerifyNumber().getBucketSize(),
-                                                config.getVerifyNumber().getLeakRatePerMinute());
-
-    this.pinLimiter = new LockingRateLimiter(cacheCluster, "pin",
-                                             config.getVerifyPin().getBucketSize(),
-                                             config.getVerifyPin().getLeakRatePerMinute());
-
-    this.attachmentLimiter = new RateLimiter(cacheCluster, "attachmentCreate",
-                                             config.getAttachments().getBucketSize(),
-                                             config.getAttachments().getLeakRatePerMinute());
-
-    this.preKeysLimiter = new RateLimiter(cacheCluster, "prekeys",
-                                          config.getPreKeys().getBucketSize(),
-                                          config.getPreKeys().getLeakRatePerMinute());
-
-    this.messagesLimiter = new RateLimiter(cacheCluster, "messages",
-                                           config.getMessages().getBucketSize(),
-                                           config.getMessages().getLeakRatePerMinute());
-
-    this.allocateDeviceLimiter = new RateLimiter(cacheCluster, "allocateDevice",
-                                                 config.getAllocateDevice().getBucketSize(),
-                                                 config.getAllocateDevice().getLeakRatePerMinute());
-
-    this.verifyDeviceLimiter = new RateLimiter(cacheCluster, "verifyDevice",
-                                               config.getVerifyDevice().getBucketSize(),
-                                               config.getVerifyDevice().getLeakRatePerMinute());
-
-    this.turnLimiter = new RateLimiter(cacheCluster, "turnAllocate",
-                                       config.getTurnAllocations().getBucketSize(),
-                                       config.getTurnAllocations().getLeakRatePerMinute());
-
-    this.profileLimiter = new RateLimiter(cacheCluster, "profile",
-                                          config.getProfile().getBucketSize(),
-                                          config.getProfile().getLeakRatePerMinute());
-
-    this.stickerPackLimiter = new RateLimiter(cacheCluster, "stickerPack",
-                                              config.getStickerPack().getBucketSize(),
-                                              config.getStickerPack().getLeakRatePerMinute());
-
-    this.usernameLookupLimiter = new RateLimiter(cacheCluster, "usernameLookup",
-                                                 config.getUsernameLookup().getBucketSize(),
-                                                 config.getUsernameLookup().getLeakRatePerMinute());
-
-    this.usernameSetLimiter = new RateLimiter(cacheCluster, "usernameSet",
-                                              config.getUsernameSet().getBucketSize(),
-                                              config.getUsernameSet().getLeakRatePerMinute());
-
-    this.unsealedSenderLimiter = new AtomicReference<>(createUnsealedSenderLimiter(cacheCluster, dynamicConfig.getConfiguration().getLimits().getUnsealedSenderNumber()));
-    this.unsealedIpLimiter     = new AtomicReference<>(createUnsealedIpLimiter(cacheCluster, dynamicConfig.getConfiguration().getLimits().getUnsealedSenderIp()));
+    public RateLimiterConfig defaultConfig() {
+      return defaultConfig;
+    }
   }
 
-  public CardinalityRateLimiter getUnsealedSenderLimiter() {
-    CardinalityRateLimitConfiguration currentConfiguration = dynamicConfig.getConfiguration().getLimits().getUnsealedSenderNumber();
-
-    return this.unsealedSenderLimiter.updateAndGet(rateLimiter -> {
-      if (rateLimiter.hasConfiguration(currentConfiguration)) {
-        return rateLimiter;
-      } else {
-        return createUnsealedSenderLimiter(cacheCluster, currentConfiguration);
-      }
-    });
+  public static RateLimiters createAndValidate(
+      final Map<String, RateLimiterConfig> configs,
+      final DynamicConfigurationManager<DynamicConfiguration> dynamicConfigurationManager,
+      final FaultTolerantRedisCluster cacheCluster) {
+    final RateLimiters rateLimiters = new RateLimiters(
+        configs, dynamicConfigurationManager, defaultScript(cacheCluster), cacheCluster, Clock.systemUTC());
+    rateLimiters.validateValuesAndConfigs();
+    return rateLimiters;
   }
 
-  public RateLimiter getUnsealedIpLimiter() {
-    RateLimitConfiguration currentConfiguration = dynamicConfig.getConfiguration().getLimits().getUnsealedSenderIp();
-
-    return this.unsealedIpLimiter.updateAndGet(rateLimiter -> {
-      if (rateLimiter.hasConfiguration(currentConfiguration)) {
-        return rateLimiter;
-      } else {
-        return createUnsealedIpLimiter(cacheCluster, currentConfiguration);
-      }
-    });
+  @VisibleForTesting
+  RateLimiters(
+      final Map<String, RateLimiterConfig> configs,
+      final DynamicConfigurationManager<DynamicConfiguration> dynamicConfigurationManager,
+      final ClusterLuaScript validateScript,
+      final FaultTolerantRedisCluster cacheCluster,
+      final Clock clock) {
+    super(For.values(), configs, dynamicConfigurationManager, validateScript, cacheCluster, clock);
   }
 
   public RateLimiter getAllocateDeviceLimiter() {
-    return allocateDeviceLimiter;
+    return forDescriptor(For.ALLOCATE_DEVICE);
   }
 
   public RateLimiter getVerifyDeviceLimiter() {
-    return verifyDeviceLimiter;
+    return forDescriptor(For.VERIFY_DEVICE);
   }
 
   public RateLimiter getMessagesLimiter() {
-    return messagesLimiter;
+    return forDescriptor(For.MESSAGES);
   }
 
   public RateLimiter getPreKeysLimiter() {
-    return preKeysLimiter;
+    return forDescriptor(For.PRE_KEYS);
   }
 
   public RateLimiter getAttachmentLimiter() {
-    return this.attachmentLimiter;
+    return forDescriptor(For.ATTACHMENT);
   }
 
   public RateLimiter getSmsDestinationLimiter() {
-    return smsDestinationLimiter;
+    return forDescriptor(For.SMS_DESTINATION);
   }
 
   public RateLimiter getSmsVoiceIpLimiter() {
-    return smsVoiceIpLimiter;
+    return forDescriptor(For.SMS_VOICE_IP);
   }
 
   public RateLimiter getSmsVoicePrefixLimiter() {
-    return smsVoicePrefixLimiter;
-  }
-
-  public RateLimiter getAutoBlockLimiter() {
-    return autoBlockLimiter;
+    return forDescriptor(For.SMS_VOICE_PREFIX);
   }
 
   public RateLimiter getVoiceDestinationLimiter() {
-    return voiceDestinationLimiter;
+    return forDescriptor(For.VOICE_DESTINATION);
   }
 
   public RateLimiter getVoiceDestinationDailyLimiter() {
-    return voiceDestinationDailyLimiter;
+    return forDescriptor(For.VOICE_DESTINATION_DAILY);
   }
 
   public RateLimiter getVerifyLimiter() {
-    return verifyLimiter;
+    return forDescriptor(For.VERIFY);
   }
 
   public RateLimiter getPinLimiter() {
-    return pinLimiter;
+    return forDescriptor(For.PIN);
   }
 
   public RateLimiter getTurnLimiter() {
-    return turnLimiter;
+    return forDescriptor(For.TURN);
   }
 
   public RateLimiter getProfileLimiter() {
-    return profileLimiter;
+    return forDescriptor(For.PROFILE);
   }
 
   public RateLimiter getStickerPackLimiter() {
-    return stickerPackLimiter;
+    return forDescriptor(For.STICKER_PACK);
   }
 
   public RateLimiter getUsernameLookupLimiter() {
-    return usernameLookupLimiter;
+    return forDescriptor(For.USERNAME_LOOKUP);
+  }
+
+  public RateLimiter getUsernameLinkLookupLimiter() {
+    return forDescriptor(For.USERNAME_LINK_LOOKUP_PER_IP);
+  }
+
+  public RateLimiter getUsernameLinkOperationLimiter() {
+    return forDescriptor(For.USERNAME_LINK_OPERATION);
   }
 
   public RateLimiter getUsernameSetLimiter() {
-    return usernameSetLimiter;
+    return forDescriptor(For.USERNAME_SET);
   }
 
-  private CardinalityRateLimiter createUnsealedSenderLimiter(FaultTolerantRedisCluster cacheCluster, CardinalityRateLimitConfiguration configuration) {
-    return new CardinalityRateLimiter(cacheCluster, "unsealedSender", configuration.getTtl(), configuration.getTtlJitter(), configuration.getMaxCardinality());
+  public RateLimiter getUsernameReserveLimiter() {
+    return forDescriptor(For.USERNAME_RESERVE);
   }
 
-  private RateLimiter createUnsealedIpLimiter(FaultTolerantRedisCluster cacheCluster,
-                                              RateLimitConfiguration configuration)
-  {
-    return createLimiter(cacheCluster, configuration, "unsealedIp");
+  public RateLimiter getCheckAccountExistenceLimiter() {
+    return forDescriptor(For.CHECK_ACCOUNT_EXISTENCE);
   }
 
-  private RateLimiter createLimiter(FaultTolerantRedisCluster cacheCluster, RateLimitConfiguration configuration, String name) {
-    return new RateLimiter(cacheCluster, name,
-                           configuration.getBucketSize(),
-                           configuration.getLeakRatePerMinute());
+  public RateLimiter getRegistrationLimiter() {
+    return forDescriptor(For.REGISTRATION);
+  }
+
+  public RateLimiter getRateLimitResetLimiter() {
+    return forDescriptor(For.RATE_LIMIT_RESET);
+  }
+
+  public RateLimiter getRecaptchaChallengeAttemptLimiter() {
+    return forDescriptor(For.RECAPTCHA_CHALLENGE_ATTEMPT);
+  }
+
+  public RateLimiter getRecaptchaChallengeSuccessLimiter() {
+    return forDescriptor(For.RECAPTCHA_CHALLENGE_SUCCESS);
+  }
+
+  public RateLimiter getPushChallengeAttemptLimiter() {
+    return forDescriptor(For.PUSH_CHALLENGE_ATTEMPT);
+  }
+
+  public RateLimiter getPushChallengeSuccessLimiter() {
+    return forDescriptor(For.PUSH_CHALLENGE_SUCCESS);
+  }
+
+  public RateLimiter getVerificationPushChallengeLimiter() {
+    return forDescriptor(For.VERIFICATION_PUSH_CHALLENGE);
+  }
+
+  public RateLimiter getVerificationCaptchaLimiter() {
+    return forDescriptor(For.VERIFICATION_CAPTCHA);
+  }
+
+  public RateLimiter getCreateCallLinkLimiter() {
+    return forDescriptor(For.CREATE_CALL_LINK);
+  }
+
+  public RateLimiter getCallEndpointLimiter() {
+    return forDescriptor(For.GET_CALLING_RELAYS);
+  }
+
+  public RateLimiter getInboundMessageBytes() {
+    return forDescriptor(For.INBOUND_MESSAGE_BYTES);
+  }
+
+  public RateLimiter getStoriesLimiter() {
+    return forDescriptor(For.STORIES);
   }
 }

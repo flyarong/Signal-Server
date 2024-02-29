@@ -4,21 +4,15 @@
  */
 package org.whispersystems.textsecuregcm.push;
 
-import io.dropwizard.lifecycle.Managed;
+import static com.codahale.metrics.MetricRegistry.name;
+import static org.whispersystems.textsecuregcm.entities.MessageProtos.Envelope;
+
 import io.micrometer.core.instrument.Metrics;
-import io.micrometer.core.instrument.Tag;
-import org.whispersystems.textsecuregcm.metrics.PushLatencyManager;
+import org.apache.commons.lang3.StringUtils;
 import org.whispersystems.textsecuregcm.redis.RedisOperation;
 import org.whispersystems.textsecuregcm.storage.Account;
 import org.whispersystems.textsecuregcm.storage.Device;
 import org.whispersystems.textsecuregcm.storage.MessagesManager;
-import org.whispersystems.textsecuregcm.util.Util;
-
-import java.util.List;
-import java.util.Optional;
-
-import static com.codahale.metrics.MetricRegistry.name;
-import static org.whispersystems.textsecuregcm.entities.MessageProtos.Envelope;
 
 /**
  * A MessageSender sends Signal messages to destination devices. Messages may be "normal" user-to-user messages,
@@ -33,41 +27,34 @@ import static org.whispersystems.textsecuregcm.entities.MessageProtos.Envelope;
  * @see org.whispersystems.textsecuregcm.storage.MessageAvailabilityListener
  * @see ReceiptSender
  */
-public class MessageSender implements Managed {
+public class MessageSender {
 
-  private final ApnFallbackManager         apnFallbackManager;
-  private final ClientPresenceManager      clientPresenceManager;
-  private final MessagesManager            messagesManager;
-  private final GCMSender                  gcmSender;
-  private final APNSender                  apnSender;
-  private final PushLatencyManager         pushLatencyManager;
+  private final ClientPresenceManager clientPresenceManager;
+  private final MessagesManager messagesManager;
+  private final PushNotificationManager pushNotificationManager;
+  private final PushLatencyManager pushLatencyManager;
 
-  private static final String SEND_COUNTER_NAME      = name(MessageSender.class, "sendMessage");
-  private static final String CHANNEL_TAG_NAME       = "channel";
-  private static final String EPHEMERAL_TAG_NAME     = "ephemeral";
+  private static final String SEND_COUNTER_NAME = name(MessageSender.class, "sendMessage");
+  private static final String CHANNEL_TAG_NAME = "channel";
+  private static final String EPHEMERAL_TAG_NAME = "ephemeral";
   private static final String CLIENT_ONLINE_TAG_NAME = "clientOnline";
+  private static final String URGENT_TAG_NAME = "urgent";
+  private static final String STORY_TAG_NAME = "story";
+  private static final String SEALED_SENDER_TAG_NAME = "sealedSender";
+  private static final String HAS_SPAM_REPORTING_TOKEN_TAG_NAME = "hasSpamReportingToken";
 
-  public MessageSender(ApnFallbackManager    apnFallbackManager,
-                       ClientPresenceManager clientPresenceManager,
-                       MessagesManager       messagesManager,
-                       GCMSender             gcmSender,
-                       APNSender             apnSender,
-                       PushLatencyManager    pushLatencyManager)
-  {
-    this.apnFallbackManager    = apnFallbackManager;
+  public MessageSender(ClientPresenceManager clientPresenceManager,
+      MessagesManager messagesManager,
+      PushNotificationManager pushNotificationManager,
+      PushLatencyManager pushLatencyManager) {
     this.clientPresenceManager = clientPresenceManager;
-    this.messagesManager       = messagesManager;
-    this.gcmSender             = gcmSender;
-    this.apnSender             = apnSender;
-    this.pushLatencyManager    = pushLatencyManager;
+    this.messagesManager = messagesManager;
+    this.pushNotificationManager = pushNotificationManager;
+    this.pushLatencyManager = pushLatencyManager;
   }
 
-  public void sendMessage(final Account account, final Device device, final Envelope message, boolean online)
-      throws NotPushRegisteredException
-  {
-    if (device.getGcmId() == null && device.getApnId() == null && !device.getFetchesMessages()) {
-      throw new NotPushRegisteredException("No delivery possible!");
-    }
+  public void sendMessage(final Account account, final Device device, final Envelope message, final boolean online)
+      throws NotPushRegisteredException {
 
     final String channel;
 
@@ -87,7 +74,7 @@ public class MessageSender implements Managed {
       clientPresent = clientPresenceManager.isPresent(account.getUuid(), device.getId());
 
       if (clientPresent) {
-        messagesManager.insertEphemeral(account.getUuid(), device.getId(), message);
+        messagesManager.insert(account.getUuid(), device.getId(), message.toBuilder().setEphemeral(true).build());
       }
     } else {
       messagesManager.insert(account.getUuid(), device.getId(), message);
@@ -98,57 +85,27 @@ public class MessageSender implements Managed {
       clientPresent = clientPresenceManager.isPresent(account.getUuid(), device.getId());
 
       if (!clientPresent) {
-        sendNewMessageNotification(account, device);
+        try {
+          pushNotificationManager.sendNewMessageNotification(account, device.getId(), message.getUrgent());
+
+          final boolean useVoip = StringUtils.isNotBlank(device.getVoipApnId());
+          RedisOperation.unchecked(() -> pushLatencyManager.recordPushSent(account.getUuid(), device.getId(), useVoip, message.getUrgent()));
+        } catch (final NotPushRegisteredException e) {
+          if (!device.getFetchesMessages()) {
+            throw e;
+          }
+        }
       }
     }
 
-    final List<Tag> tags = List.of(
-            Tag.of(CHANNEL_TAG_NAME, channel),
-            Tag.of(EPHEMERAL_TAG_NAME, String.valueOf(online)),
-            Tag.of(CLIENT_ONLINE_TAG_NAME, String.valueOf(clientPresent)));
-
-    Metrics.counter(SEND_COUNTER_NAME, tags).increment();
-  }
-
-  public void sendNewMessageNotification(final Account account, final Device device) {
-    if (!Util.isEmpty(device.getGcmId())) {
-      sendGcmNotification(account, device);
-    } else if (!Util.isEmpty(device.getApnId()) || !Util.isEmpty(device.getVoipApnId())) {
-      sendApnNotification(account, device);
-    }
-  }
-
-  private void sendGcmNotification(Account account, Device device) {
-    GcmMessage gcmMessage = new GcmMessage(device.getGcmId(), account.getNumber(),
-                                           (int)device.getId(), GcmMessage.Type.NOTIFICATION, Optional.empty());
-
-    gcmSender.sendMessage(gcmMessage);
-
-    RedisOperation.unchecked(() -> pushLatencyManager.recordPushSent(account.getUuid(), device.getId()));
-  }
-
-  private void sendApnNotification(Account account, Device device) {
-    ApnMessage apnMessage;
-
-    if (!Util.isEmpty(device.getVoipApnId())) {
-      apnMessage = new ApnMessage(device.getVoipApnId(), account.getNumber(), device.getId(), true, Optional.empty());
-      RedisOperation.unchecked(() -> apnFallbackManager.schedule(account, device));
-    } else {
-      apnMessage = new ApnMessage(device.getApnId(), account.getNumber(), device.getId(), false, Optional.empty());
-    }
-
-    apnSender.sendMessage(apnMessage);
-
-    RedisOperation.unchecked(() -> pushLatencyManager.recordPushSent(account.getUuid(), device.getId()));
-  }
-
-  @Override
-  public void start() {
-    apnSender.start();
-  }
-
-  @Override
-  public void stop() {
-    apnSender.stop();
+    Metrics.counter(SEND_COUNTER_NAME,
+            CHANNEL_TAG_NAME, channel,
+            EPHEMERAL_TAG_NAME, String.valueOf(online),
+            CLIENT_ONLINE_TAG_NAME, String.valueOf(clientPresent),
+            URGENT_TAG_NAME, String.valueOf(message.getUrgent()),
+            STORY_TAG_NAME, String.valueOf(message.getStory()),
+            SEALED_SENDER_TAG_NAME, String.valueOf(!message.hasSourceUuid()),
+            HAS_SPAM_REPORTING_TOKEN_TAG_NAME, String.valueOf(message.getReportSpamToken() != null && !message.getReportSpamToken().isEmpty()))
+        .increment();
   }
 }

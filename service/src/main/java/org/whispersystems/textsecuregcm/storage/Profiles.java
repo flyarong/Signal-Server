@@ -1,98 +1,289 @@
 /*
- * Copyright 2013-2020 Signal Messenger, LLC
+ * Copyright 2013 Signal Messenger, LLC
  * SPDX-License-Identifier: AGPL-3.0-only
  */
 
 package org.whispersystems.textsecuregcm.storage;
 
-import static com.codahale.metrics.MetricRegistry.name;
+import static org.whispersystems.textsecuregcm.metrics.MetricsUtil.name;
 
-import com.codahale.metrics.MetricRegistry;
-import com.codahale.metrics.SharedMetricRegistries;
-import com.codahale.metrics.Timer;
+import com.google.common.annotations.VisibleForTesting;
+import io.micrometer.core.instrument.Metrics;
+import io.micrometer.core.instrument.Timer;
+import java.util.ArrayList;
+import java.util.HashMap;
+import java.util.List;
+import java.util.Map;
 import java.util.Optional;
 import java.util.UUID;
-import org.whispersystems.textsecuregcm.storage.mappers.VersionedProfileMapper;
-import org.whispersystems.textsecuregcm.util.Constants;
+import java.util.concurrent.CompletableFuture;
+import java.util.stream.Collectors;
+import org.apache.commons.lang3.StringUtils;
+import org.whispersystems.textsecuregcm.util.AsyncTimerUtil;
+import org.whispersystems.textsecuregcm.util.AttributeValues;
+import org.whispersystems.textsecuregcm.util.Util;
+import reactor.core.publisher.Flux;
+import reactor.core.publisher.Mono;
+import software.amazon.awssdk.services.dynamodb.DynamoDbAsyncClient;
+import software.amazon.awssdk.services.dynamodb.DynamoDbClient;
+import software.amazon.awssdk.services.dynamodb.model.AttributeValue;
+import software.amazon.awssdk.services.dynamodb.model.DeleteItemRequest;
+import software.amazon.awssdk.services.dynamodb.model.GetItemRequest;
+import software.amazon.awssdk.services.dynamodb.model.GetItemResponse;
+import software.amazon.awssdk.services.dynamodb.model.QueryRequest;
+import software.amazon.awssdk.services.dynamodb.model.UpdateItemRequest;
 
 public class Profiles {
 
-  public static final String ID = "id";
-  public static final String UID = "uuid";
-  public static final String VERSION = "version";
-  public static final String NAME = "name";
-  public static final String AVATAR = "avatar";
-  public static final String ABOUT_EMOJI = "about_emoji";
-  public static final String ABOUT = "about";
-  public static final String PAYMENT_ADDRESS = "payment_address";
-  public static final String COMMITMENT = "commitment";
+  private final DynamoDbClient dynamoDbClient;
+  private final DynamoDbAsyncClient dynamoDbAsyncClient;
+  private final String tableName;
 
-  private final MetricRegistry metricRegistry = SharedMetricRegistries.getOrCreate(Constants.METRICS_NAME);
+  // UUID of the account that owns this profile; byte array
+  @VisibleForTesting
+  static final String KEY_ACCOUNT_UUID = "U";
 
-  private final Timer setTimer    = metricRegistry.timer(name(Profiles.class, "set"   ));
-  private final Timer getTimer    = metricRegistry.timer(name(Profiles.class, "get"   ));
-  private final Timer deleteTimer = metricRegistry.timer(name(Profiles.class, "delete"));
+  // Version of this profile; string
+  @VisibleForTesting
+  static final String ATTR_VERSION = "V";
 
-  private final FaultTolerantDatabase database;
+  // User's name; byte array
+  private static final String ATTR_NAME = "N";
 
-  public Profiles(FaultTolerantDatabase database) {
-    this.database = database;
-    this.database.getDatabase().registerRowMapper(new VersionedProfileMapper());
+  // Avatar path/filename; string
+  private static final String ATTR_AVATAR = "A";
+
+  // Bio/about text; byte array
+  private static final String ATTR_ABOUT = "B";
+
+  // Bio/about emoji; byte array
+  private static final String ATTR_EMOJI = "E";
+
+  // Payment address; byte array
+  private static final String ATTR_PAYMENT_ADDRESS = "P";
+
+  // Phone number sharing setting; byte array
+  private static final String ATTR_PHONE_NUMBER_SHARING = "S";
+
+  // Commitment; byte array
+  private static final String ATTR_COMMITMENT = "C";
+
+  private static final Map<String, String> UPDATE_EXPRESSION_ATTRIBUTE_NAMES = Map.of(
+      "#commitment", ATTR_COMMITMENT,
+      "#name", ATTR_NAME,
+      "#avatar", ATTR_AVATAR,
+      "#about", ATTR_ABOUT,
+      "#aboutEmoji", ATTR_EMOJI,
+      "#paymentAddress", ATTR_PAYMENT_ADDRESS,
+      "#phoneNumberSharing", ATTR_PHONE_NUMBER_SHARING);
+
+  private static final Timer SET_PROFILES_TIMER = Metrics.timer(name(Profiles.class, "set"));
+  private static final Timer GET_PROFILE_TIMER = Metrics.timer(name(Profiles.class, "get"));
+  private static final String DELETE_PROFILES_TIMER_NAME = name(Profiles.class, "delete");
+  private static final String PARSE_BYTE_ARRAY_COUNTER_NAME = name(Profiles.class, "parseByteArray");
+
+  private static final int MAX_CONCURRENCY = 32;
+
+  public Profiles(final DynamoDbClient dynamoDbClient,
+      final DynamoDbAsyncClient dynamoDbAsyncClient,
+      final String tableName) {
+
+    this.dynamoDbClient = dynamoDbClient;
+    this.dynamoDbAsyncClient = dynamoDbAsyncClient;
+    this.tableName = tableName;
   }
 
-  public void set(UUID uuid, VersionedProfile profile) {
-    database.use(jdbi -> jdbi.useHandle(handle -> {
-      try (Timer.Context ignored = setTimer.time()) {
-        handle.createUpdate(
-            "INSERT INTO profiles ("
-                + UID + ", "
-                + VERSION + ", "
-                + NAME + ", "
-                + AVATAR + ", "
-                + ABOUT_EMOJI + ", "
-                + ABOUT + ", "
-                + PAYMENT_ADDRESS + ", "
-                + COMMITMENT + ") "
-                + "VALUES (:uuid, :version, :name, :avatar, :about_emoji, :about, :payment_address, :commitment) "
-                + "ON CONFLICT (" + UID + ", " + VERSION + ") "
-                + "DO UPDATE SET "
-                + NAME + " = EXCLUDED." + NAME + ", "
-                + AVATAR + " = EXCLUDED." + AVATAR + ", "
-                + ABOUT + " = EXCLUDED." + ABOUT + ", "
-                + ABOUT_EMOJI + " = EXCLUDED." + ABOUT_EMOJI + ", "
-                + PAYMENT_ADDRESS + " = EXCLUDED." + PAYMENT_ADDRESS)
-            .bind("uuid", uuid)
-            .bind("version", profile.getVersion())
-            .bind("name", profile.getName())
-            .bind("avatar", profile.getAvatar())
-            .bind("about_emoji", profile.getAboutEmoji())
-            .bind("about", profile.getAbout())
-            .bind("payment_address", profile.getPaymentAddress())
-            .bind("commitment", profile.getCommitment())
-            .execute();
-      }
-    }));
+  public void set(final UUID uuid, final VersionedProfile profile) {
+    SET_PROFILES_TIMER.record(() -> {
+      dynamoDbClient.updateItem(UpdateItemRequest.builder()
+          .tableName(tableName)
+          .key(buildPrimaryKey(uuid, profile.version()))
+          .updateExpression(buildUpdateExpression(profile))
+          .expressionAttributeNames(UPDATE_EXPRESSION_ATTRIBUTE_NAMES)
+          .expressionAttributeValues(buildUpdateExpressionAttributeValues(profile))
+          .build());
+    });
   }
 
-  public Optional<VersionedProfile> get(UUID uuid, String version) {
-    return database.with(jdbi -> jdbi.withHandle(handle -> {
-      try (Timer.Context ignored = getTimer.time()) {
-        return handle.createQuery("SELECT * FROM profiles WHERE " + UID + " = :uuid AND " + VERSION + " = :version")
-                     .bind("uuid", uuid)
-                     .bind("version", version)
-                     .mapTo(VersionedProfile.class)
-                     .findFirst();
-      }
-    }));
+  public CompletableFuture<Void> setAsync(final UUID uuid, final VersionedProfile profile) {
+    return AsyncTimerUtil.record(SET_PROFILES_TIMER, () -> dynamoDbAsyncClient.updateItem(UpdateItemRequest.builder()
+            .tableName(tableName)
+            .key(buildPrimaryKey(uuid, profile.version()))
+            .updateExpression(buildUpdateExpression(profile))
+            .expressionAttributeNames(UPDATE_EXPRESSION_ATTRIBUTE_NAMES)
+            .expressionAttributeValues(buildUpdateExpressionAttributeValues(profile))
+            .build()
+        ).thenRun(Util.NOOP)
+    ).toCompletableFuture();
   }
 
-  public void deleteAll(UUID uuid) {
-    database.use(jdbi -> jdbi.useHandle(handle -> {
-      try (Timer.Context ignored = deleteTimer.time()) {
-        handle.createUpdate("DELETE FROM profiles WHERE " + UID + " = :uuid")
-              .bind("uuid", uuid)
-              .execute();
-      }
-    }));
+  private static Map<String, AttributeValue> buildPrimaryKey(final UUID uuid, final String version) {
+    return Map.of(
+        KEY_ACCOUNT_UUID, AttributeValues.fromUUID(uuid),
+        ATTR_VERSION, AttributeValues.fromString(version));
+  }
+
+  @VisibleForTesting
+  static String buildUpdateExpression(final VersionedProfile profile) {
+    final List<String> updatedAttributes = new ArrayList<>(5);
+    final List<String> deletedAttributes = new ArrayList<>(5);
+
+    if (profile.name() != null) {
+      updatedAttributes.add("name");
+    } else {
+      deletedAttributes.add("name");
+    }
+
+    if (StringUtils.isNotBlank(profile.avatar())) {
+      updatedAttributes.add("avatar");
+    } else {
+      deletedAttributes.add("avatar");
+    }
+
+    if (profile.about() != null) {
+      updatedAttributes.add("about");
+    } else {
+      deletedAttributes.add("about");
+    }
+
+    if (profile.aboutEmoji() != null) {
+      updatedAttributes.add("aboutEmoji");
+    } else {
+      deletedAttributes.add("aboutEmoji");
+    }
+
+    if (profile.paymentAddress() != null) {
+      updatedAttributes.add("paymentAddress");
+    } else {
+      deletedAttributes.add("paymentAddress");
+    }
+
+    if (profile.phoneNumberSharing() != null) {
+      updatedAttributes.add("phoneNumberSharing");
+    } else {
+      deletedAttributes.add("phoneNumberSharing");
+    }
+
+    final StringBuilder updateExpressionBuilder = new StringBuilder(
+        "SET #commitment = if_not_exists(#commitment, :commitment)");
+
+    if (!updatedAttributes.isEmpty()) {
+      updatedAttributes.forEach(token -> updateExpressionBuilder
+          .append(", #")
+          .append(token)
+          .append(" = :")
+          .append(token));
+    }
+
+    if (!deletedAttributes.isEmpty()) {
+      updateExpressionBuilder.append(" REMOVE ");
+      updateExpressionBuilder.append(deletedAttributes.stream()
+          .map(token -> "#" + token)
+          .collect(Collectors.joining(", ")));
+    }
+
+    return updateExpressionBuilder.toString();
+  }
+
+  @VisibleForTesting
+  static Map<String, AttributeValue> buildUpdateExpressionAttributeValues(final VersionedProfile profile) {
+    final Map<String, AttributeValue> expressionValues = new HashMap<>();
+
+    expressionValues.put(":commitment", AttributeValues.fromByteArray(profile.commitment()));
+
+    if (profile.name() != null) {
+      expressionValues.put(":name", AttributeValues.fromByteArray(profile.name()));
+    }
+
+    if (StringUtils.isNotBlank(profile.avatar())) {
+      expressionValues.put(":avatar", AttributeValues.fromString(profile.avatar()));
+    }
+
+    if (profile.about() != null) {
+      expressionValues.put(":about", AttributeValues.fromByteArray(profile.about()));
+    }
+
+    if (profile.aboutEmoji() != null) {
+      expressionValues.put(":aboutEmoji", AttributeValues.fromByteArray(profile.aboutEmoji()));
+    }
+
+    if (profile.paymentAddress() != null) {
+      expressionValues.put(":paymentAddress", AttributeValues.fromByteArray(profile.paymentAddress()));
+    }
+
+    if (profile.phoneNumberSharing() != null) {
+      expressionValues.put(":phoneNumberSharing", AttributeValues.fromByteArray(profile.phoneNumberSharing()));
+    }
+    return expressionValues;
+  }
+
+  public Optional<VersionedProfile> get(final UUID uuid, final String version) {
+    return GET_PROFILE_TIMER.record(() -> {
+      final GetItemResponse response = dynamoDbClient.getItem(GetItemRequest.builder()
+          .tableName(tableName)
+          .key(buildPrimaryKey(uuid, version))
+          .consistentRead(true)
+          .build());
+
+      return response.hasItem() ? Optional.of(fromItem(response.item())) : Optional.empty();
+    });
+  }
+
+  public CompletableFuture<Optional<VersionedProfile>> getAsync(final UUID uuid, final String version) {
+    return AsyncTimerUtil.record(GET_PROFILE_TIMER, () -> dynamoDbAsyncClient.getItem(GetItemRequest.builder()
+        .tableName(tableName)
+        .key(buildPrimaryKey(uuid, version))
+        .consistentRead(true)
+        .build())
+        .thenApply(response ->
+            response.hasItem() ? Optional.of(fromItem(response.item())) : Optional.<VersionedProfile>empty())
+    ).toCompletableFuture();
+  }
+
+  private static VersionedProfile fromItem(final Map<String, AttributeValue> item) {
+    return new VersionedProfile(
+        AttributeValues.getString(item, ATTR_VERSION, null),
+        getBytes(item, ATTR_NAME),
+        AttributeValues.getString(item, ATTR_AVATAR, null),
+        getBytes(item, ATTR_EMOJI),
+        getBytes(item, ATTR_ABOUT),
+        getBytes(item, ATTR_PAYMENT_ADDRESS),
+        getBytes(item, ATTR_PHONE_NUMBER_SHARING),
+        AttributeValues.getByteArray(item, ATTR_COMMITMENT, null));
+  }
+
+  private static byte[] getBytes(final Map<String, AttributeValue> item, final String attributeName) {
+    final AttributeValue attributeValue = item.get(attributeName);
+
+    if (attributeValue == null) {
+      return null;
+    }
+    return AttributeValues.extractByteArray(attributeValue, PARSE_BYTE_ARRAY_COUNTER_NAME);
+  }
+
+  public CompletableFuture<Void> deleteAll(final UUID uuid) {
+    final Timer.Sample sample = Timer.start();
+
+    final AttributeValue uuidAttributeValue = AttributeValues.fromUUID(uuid);
+
+    return Flux.from(dynamoDbAsyncClient.queryPaginator(QueryRequest.builder()
+                .tableName(tableName)
+                .keyConditionExpression("#uuid = :uuid")
+                .expressionAttributeNames(Map.of("#uuid", KEY_ACCOUNT_UUID))
+                .expressionAttributeValues(Map.of(":uuid", uuidAttributeValue))
+                .projectionExpression(ATTR_VERSION)
+                .consistentRead(true)
+                .build())
+            .items())
+        .flatMap(item -> Mono.fromFuture(() -> dynamoDbAsyncClient.deleteItem(DeleteItemRequest.builder()
+            .tableName(tableName)
+            .key(Map.of(
+                KEY_ACCOUNT_UUID, uuidAttributeValue,
+                ATTR_VERSION, item.get(ATTR_VERSION)))
+            .build())), MAX_CONCURRENCY)
+        .then()
+        .doOnSuccess(ignored -> sample.stop(Metrics.timer(DELETE_PROFILES_TIMER_NAME, "outcome", "success")))
+        .doOnError(ignored -> sample.stop(Metrics.timer(DELETE_PROFILES_TIMER_NAME, "outcome", "error")))
+        .toFuture();
   }
 }

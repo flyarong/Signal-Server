@@ -1,14 +1,19 @@
+/*
+ * Copyright 2023 Signal Messenger, LLC
+ * SPDX-License-Identifier: AGPL-3.0-only
+ */
+
 package org.whispersystems.textsecuregcm.currency;
 
 import com.fasterxml.jackson.annotation.JsonProperty;
-import org.whispersystems.textsecuregcm.util.SystemMapper;
-
 import java.io.IOException;
+import java.math.BigDecimal;
 import java.net.URI;
 import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
 import java.util.Map;
+import org.whispersystems.textsecuregcm.util.SystemMapper;
 
 public class FixerClient {
 
@@ -20,7 +25,7 @@ public class FixerClient {
     this.client = client;
   }
 
-  public Map<String, Double> getConversionsForBase(String base) throws FixerException {
+  public Map<String, BigDecimal> getConversionsForBase(String base) throws FixerException {
     try {
       URI uri = URI.create("https://data.fixer.io/api/latest?access_key=" + apiKey + "&base=" + base);
 
@@ -34,7 +39,7 @@ public class FixerClient {
         throw new FixerException("Bad response: " + response.statusCode() + " " + response.toString());
       }
 
-      FixerResponse parsedResponse = SystemMapper.getMapper().readValue(response.body(), FixerResponse.class);
+      FixerResponse parsedResponse = SystemMapper.jsonMapper().readValue(response.body(), FixerResponse.class);
 
       if (parsedResponse.success) return parsedResponse.rates;
       else                        throw new FixerException("Got failed response!");
@@ -58,7 +63,7 @@ public class FixerClient {
     private String date;
 
     @JsonProperty
-    private Map<String, Double> rates;
+    private Map<String, BigDecimal> rates;
 
   }
 

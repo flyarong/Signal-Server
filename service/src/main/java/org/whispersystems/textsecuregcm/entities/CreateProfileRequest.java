@@ -8,82 +8,82 @@ package org.whispersystems.textsecuregcm.entities;
 import com.fasterxml.jackson.annotation.JsonProperty;
 import com.fasterxml.jackson.databind.annotation.JsonDeserialize;
 import com.fasterxml.jackson.databind.annotation.JsonSerialize;
+import java.util.List;
+import java.util.Optional;
 import javax.validation.constraints.NotEmpty;
 import javax.validation.constraints.NotNull;
-import org.apache.commons.lang3.StringUtils;
-import org.signal.zkgroup.profiles.ProfileKeyCommitment;
+import org.signal.libsignal.zkgroup.profiles.ProfileKeyCommitment;
+import org.whispersystems.textsecuregcm.util.ByteArrayBase64WithPaddingAdapter;
 import org.whispersystems.textsecuregcm.util.ExactlySize;
+import org.whispersystems.textsecuregcm.util.ValidHexString;
 
-public class CreateProfileRequest {
-
-  @JsonProperty
-  @NotEmpty
-  private String version;
-
-  @JsonProperty
-  @ExactlySize({108, 380})
-  private String name;
-
-  @JsonProperty
-  private boolean avatar;
-
-  @JsonProperty
-  @ExactlySize({0, 80})
-  private String aboutEmoji;
-
-  @JsonProperty
-  @ExactlySize({0, 208, 376, 720})
-  private String about;
-
-  @JsonProperty
-  @ExactlySize({0, 776})
-  private String paymentAddress;
-
+public record CreateProfileRequest(
   @JsonProperty
   @NotNull
   @JsonDeserialize(using = ProfileKeyCommitmentAdapter.Deserializing.class)
   @JsonSerialize(using = ProfileKeyCommitmentAdapter.Serializing.class)
-  private ProfileKeyCommitment commitment;
+  ProfileKeyCommitment commitment,
 
-  public CreateProfileRequest() {}
+  @JsonProperty
+  @NotEmpty
+  @ValidHexString
+  @ExactlySize({64})
+  String version,
 
-  public CreateProfileRequest(
-      ProfileKeyCommitment commitment, String version, String name, String aboutEmoji, String about,
-      String paymentAddress, boolean wantsAvatar) {
-    this.commitment = commitment;
-    this.version = version;
-    this.name = name;
-    this.aboutEmoji = aboutEmoji;
-    this.about = about;
-    this.paymentAddress = paymentAddress;
-    this.avatar = wantsAvatar;
+  @JsonProperty
+  @JsonSerialize(using = ByteArrayBase64WithPaddingAdapter.Serializing.class)
+  @JsonDeserialize(using = ByteArrayBase64WithPaddingAdapter.Deserializing.class)
+  @ExactlySize({81, 285})
+  byte[] name,
+
+  @JsonProperty
+  @JsonSerialize(using = ByteArrayBase64WithPaddingAdapter.Serializing.class)
+  @JsonDeserialize(using = ByteArrayBase64WithPaddingAdapter.Deserializing.class)
+  @ExactlySize({0, 60})
+  byte[] aboutEmoji,
+
+  @JsonProperty
+  @JsonSerialize(using = ByteArrayBase64WithPaddingAdapter.Serializing.class)
+  @JsonDeserialize(using = ByteArrayBase64WithPaddingAdapter.Deserializing.class)
+  @ExactlySize({0, 156, 282, 540})
+  byte[] about,
+
+  @JsonProperty
+  @JsonSerialize(using = ByteArrayBase64WithPaddingAdapter.Serializing.class)
+  @JsonDeserialize(using = ByteArrayBase64WithPaddingAdapter.Deserializing.class)
+  @ExactlySize({0, 582})
+  byte[] paymentAddress,
+
+  @JsonProperty("avatar")
+  boolean hasAvatar,
+
+  @JsonProperty
+  boolean sameAvatar,
+
+  @JsonProperty("badgeIds")
+  Optional<List<String>> badges,
+
+  @JsonProperty
+  @JsonSerialize(using = ByteArrayBase64WithPaddingAdapter.Serializing.class)
+  @JsonDeserialize(using = ByteArrayBase64WithPaddingAdapter.Deserializing.class)
+  @ExactlySize({0, 29})
+  byte[] phoneNumberSharing
+) {
+
+  public enum AvatarChange {
+    UNCHANGED,
+    CLEAR,
+    UPDATE;
   }
 
-  public ProfileKeyCommitment getCommitment() {
-    return commitment;
+  public AvatarChange getAvatarChange() {
+    if (!hasAvatar()) {
+      return AvatarChange.CLEAR;
+    }
+    if (!sameAvatar) {
+      return AvatarChange.UPDATE;
+    }
+    return AvatarChange.UNCHANGED;
   }
 
-  public String getVersion() {
-    return version;
-  }
-
-  public String getName() {
-    return name;
-  }
-
-  public boolean isAvatar() {
-    return avatar;
-  }
-
-  public String getAboutEmoji() {
-    return StringUtils.stripToNull(aboutEmoji);
-  }
-
-  public String getAbout() {
-    return StringUtils.stripToNull(about);
-  }
-
-  public String getPaymentAddress() {
-    return StringUtils.stripToNull(paymentAddress);
-  }
 }

@@ -1,49 +1,21 @@
 /*
- * Copyright 2013-2020 Signal Messenger, LLC
+ * Copyright 2023 Signal Messenger, LLC
  * SPDX-License-Identifier: AGPL-3.0-only
  */
 
 package org.whispersystems.textsecuregcm.entities;
 
-import com.fasterxml.jackson.annotation.JsonProperty;
-import javax.validation.constraints.NotEmpty;
+import org.signal.libsignal.protocol.IdentityKey;
 
-public class SignedPreKey extends PreKey {
+public interface SignedPreKey<K> extends PreKey<K> {
 
-  @JsonProperty
-  @NotEmpty
-  private String signature;
+  byte[] signature();
 
-  public SignedPreKey() {}
-
-  public SignedPreKey(long keyId, String publicKey, String signature) {
-    super(keyId, publicKey);
-    this.signature = signature;
-  }
-
-  public String getSignature() {
-    return signature;
-  }
-
-  @Override
-  public boolean equals(Object object) {
-    if (object == null || !(object instanceof SignedPreKey)) return false;
-    SignedPreKey that = (SignedPreKey) object;
-
-    if (signature == null) {
-      return super.equals(object) && that.signature == null;
-    } else {
-      return super.equals(object) && this.signature.equals(that.signature);
+  default boolean signatureValid(final IdentityKey identityKey) {
+    try {
+      return identityKey.getPublicKey().verifySignature(serializedPublicKey(), signature());
+    } catch (final Exception e) {
+      return false;
     }
   }
-
-  @Override
-  public int hashCode() {
-    if (signature == null) {
-      return super.hashCode();
-    } else {
-      return super.hashCode() ^ signature.hashCode();
-    }
-  }
-
 }

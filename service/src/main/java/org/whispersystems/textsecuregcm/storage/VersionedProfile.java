@@ -5,75 +5,34 @@
 
 package org.whispersystems.textsecuregcm.storage;
 
-import com.fasterxml.jackson.annotation.JsonProperty;
 import com.fasterxml.jackson.databind.annotation.JsonDeserialize;
 import com.fasterxml.jackson.databind.annotation.JsonSerialize;
 import org.whispersystems.textsecuregcm.util.ByteArrayAdapter;
+import org.whispersystems.textsecuregcm.util.ByteArrayBase64WithPaddingAdapter;
 
-public class VersionedProfile {
+public record VersionedProfile (String version,
+                                @JsonSerialize(using = ByteArrayBase64WithPaddingAdapter.Serializing.class)
+                                @JsonDeserialize(using = ByteArrayBase64WithPaddingAdapter.Deserializing.class)
+                                byte[] name,
 
-  @JsonProperty
-  private String version;
+                                String avatar,
 
-  @JsonProperty
-  private String name;
+                                @JsonSerialize(using = ByteArrayBase64WithPaddingAdapter.Serializing.class)
+                                @JsonDeserialize(using = ByteArrayBase64WithPaddingAdapter.Deserializing.class)
+                                byte[] aboutEmoji,
 
-  @JsonProperty
-  private String avatar;
+                                @JsonSerialize(using = ByteArrayBase64WithPaddingAdapter.Serializing.class)
+                                @JsonDeserialize(using = ByteArrayBase64WithPaddingAdapter.Deserializing.class)
+                                byte[] about,
 
-  @JsonProperty
-  private String aboutEmoji;
+                                @JsonSerialize(using = ByteArrayBase64WithPaddingAdapter.Serializing.class)
+                                @JsonDeserialize(using = ByteArrayBase64WithPaddingAdapter.Deserializing.class)
+                                byte[] paymentAddress,
 
-  @JsonProperty
-  private String about;
+                                @JsonSerialize(using = ByteArrayAdapter.Serializing.class)
+                                @JsonDeserialize(using = ByteArrayAdapter.Deserializing.class)
+                                byte[] phoneNumberSharing,
 
-  @JsonProperty
-  private String paymentAddress;
-
-  @JsonProperty
-  @JsonSerialize(using = ByteArrayAdapter.Serializing.class)
-  @JsonDeserialize(using = ByteArrayAdapter.Deserializing.class)
-  private byte[] commitment;
-
-  public VersionedProfile() {}
-
-  public VersionedProfile(
-      String version, String name, String avatar, String aboutEmoji, String about, String paymentAddress,
-      byte[] commitment) {
-    this.version = version;
-    this.name = name;
-    this.avatar = avatar;
-    this.aboutEmoji = aboutEmoji;
-    this.about = about;
-    this.paymentAddress = paymentAddress;
-    this.commitment = commitment;
-  }
-
-  public String getVersion() {
-    return version;
-  }
-
-  public String getName() {
-    return name;
-  }
-
-  public String getAvatar() {
-    return avatar;
-  }
-
-  public String getAboutEmoji() {
-    return aboutEmoji;
-  }
-
-  public String getAbout() {
-    return about;
-  }
-
-  public String getPaymentAddress() {
-    return paymentAddress;
-  }
-
-  public byte[] getCommitment() {
-    return commitment;
-  }
-}
+                                @JsonSerialize(using = ByteArrayAdapter.Serializing.class)
+                                @JsonDeserialize(using = ByteArrayAdapter.Deserializing.class)
+                                byte[] commitment) {}

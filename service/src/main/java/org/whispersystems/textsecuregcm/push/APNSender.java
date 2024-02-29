@@ -1,110 +1,176 @@
 /*
- * Copyright 2013-2020 Signal Messenger, LLC
+ * Copyright 2013 Signal Messenger, LLC
  * SPDX-License-Identifier: AGPL-3.0-only
  */
 package org.whispersystems.textsecuregcm.push;
 
-import com.codahale.metrics.Meter;
-import com.codahale.metrics.MetricRegistry;
-import com.codahale.metrics.SharedMetricRegistries;
-import com.google.common.annotations.VisibleForTesting;
-import com.google.common.util.concurrent.FutureCallback;
-import com.google.common.util.concurrent.Futures;
-import com.google.common.util.concurrent.ListenableFuture;
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
-import org.whispersystems.textsecuregcm.configuration.ApnConfiguration;
-import org.whispersystems.textsecuregcm.push.RetryingApnsClient.ApnResult;
-import org.whispersystems.textsecuregcm.redis.RedisOperation;
-import org.whispersystems.textsecuregcm.storage.Account;
-import org.whispersystems.textsecuregcm.storage.AccountsManager;
-import org.whispersystems.textsecuregcm.storage.Device;
-import org.whispersystems.textsecuregcm.util.Constants;
+import static org.whispersystems.textsecuregcm.metrics.MetricsUtil.name;
 
-import javax.annotation.Nullable;
+import com.eatthepath.pushy.apns.ApnsClient;
+import com.eatthepath.pushy.apns.ApnsClientBuilder;
+import com.eatthepath.pushy.apns.DeliveryPriority;
+import com.eatthepath.pushy.apns.PushType;
+import com.eatthepath.pushy.apns.auth.ApnsSigningKey;
+import com.eatthepath.pushy.apns.util.SimpleApnsPayloadBuilder;
+import com.eatthepath.pushy.apns.util.SimpleApnsPushNotification;
+import com.google.common.annotations.VisibleForTesting;
+import io.dropwizard.lifecycle.Managed;
+import io.micrometer.core.instrument.Metrics;
+import io.micrometer.core.instrument.Timer;
+import java.io.ByteArrayInputStream;
 import java.io.IOException;
 import java.security.InvalidKeyException;
 import java.security.NoSuchAlgorithmException;
+import java.time.Duration;
 import java.time.Instant;
-import java.util.Optional;
+import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ExecutorService;
-import java.util.concurrent.Executors;
-import java.util.concurrent.TimeUnit;
+import org.whispersystems.textsecuregcm.configuration.ApnConfiguration;
 
-import static com.codahale.metrics.MetricRegistry.name;
-import io.dropwizard.lifecycle.Managed;
+public class APNSender implements Managed, PushNotificationSender {
 
-public class APNSender implements Managed {
+  private final ExecutorService executor;
+  private final String bundleId;
+  private final ApnsClient apnsClient;
 
-  private final Logger logger = LoggerFactory.getLogger(APNSender.class);
+  @VisibleForTesting
+  static final String APN_VOIP_NOTIFICATION_PAYLOAD = new SimpleApnsPayloadBuilder()
+      .setSound("default")
+      .setLocalizedAlertMessage("APN_Message")
+      .build();
 
-  private static final MetricRegistry metricRegistry = SharedMetricRegistries.getOrCreate(Constants.METRICS_NAME);
-  private static final Meter unregisteredEventStale  = metricRegistry.meter(name(APNSender.class, "unregistered_event_stale"));
-  private static final Meter unregisteredEventFresh  = metricRegistry.meter(name(APNSender.class, "unregistered_event_fresh"));
+  @VisibleForTesting
+  static final String APN_NSE_NOTIFICATION_PAYLOAD = new SimpleApnsPayloadBuilder()
+      .setMutableContent(true)
+      .setLocalizedAlertMessage("APN_Message")
+      .build();
 
-  private ApnFallbackManager fallbackManager;
+  @VisibleForTesting
+  static final String APN_BACKGROUND_PAYLOAD = new SimpleApnsPayloadBuilder()
+      .setContentAvailable(true)
+      .build();
 
-  private final ExecutorService    executor;
-  private final AccountsManager    accountsManager;
-  private final String             bundleId;
-  private final boolean            sandbox;
-  private final RetryingApnsClient apnsClient;
+  @VisibleForTesting
+  static final Instant MAX_EXPIRATION = Instant.ofEpochMilli(Integer.MAX_VALUE * 1000L);
 
-  public APNSender(ExecutorService executor, AccountsManager accountsManager, ApnConfiguration configuration)
+  private static final String APNS_CA_FILENAME = "apns-certificates.pem";
+
+  private static final Timer SEND_NOTIFICATION_TIMER = Metrics.timer(name(APNSender.class, "sendNotification"));
+
+  public APNSender(ExecutorService executor, ApnConfiguration configuration)
       throws IOException, NoSuchAlgorithmException, InvalidKeyException
   {
-    this.executor        = executor;
-    this.accountsManager = accountsManager;
-    this.bundleId        = configuration.getBundleId();
-    this.sandbox         = configuration.isSandboxEnabled();
-    this.apnsClient      = new RetryingApnsClient(configuration.getSigningKey(),
-                                                  configuration.getTeamId(),
-                                                  configuration.getKeyId(),
-                                                  sandbox);
+    this.executor = executor;
+    this.bundleId = configuration.bundleId();
+    this.apnsClient = new ApnsClientBuilder().setSigningKey(
+            ApnsSigningKey.loadFromInputStream(new ByteArrayInputStream(configuration.signingKey().value().getBytes()),
+                configuration.teamId().value(), configuration.keyId().value()))
+        .setTrustedServerCertificateChain(getClass().getResourceAsStream(APNS_CA_FILENAME))
+        .setApnsServer(configuration.sandbox() ? ApnsClientBuilder.DEVELOPMENT_APNS_HOST : ApnsClientBuilder.PRODUCTION_APNS_HOST)
+        .build();
   }
 
   @VisibleForTesting
-  public APNSender(ExecutorService executor, AccountsManager accountsManager, RetryingApnsClient apnsClient, String bundleId, boolean sandbox) {
-    this.executor        = executor;
-    this.accountsManager = accountsManager;
-    this.apnsClient      = apnsClient;
-    this.sandbox         = sandbox;
-    this.bundleId        = bundleId;
+  public APNSender(ExecutorService executor, ApnsClient apnsClient, String bundleId) {
+    this.executor = executor;
+    this.apnsClient = apnsClient;
+    this.bundleId = bundleId;
   }
 
-  public ListenableFuture<ApnResult> sendMessage(final ApnMessage message) {
-    String topic = bundleId;
+  @Override
+  public CompletableFuture<SendPushNotificationResult> sendNotification(final PushNotification notification) {
+    final String topic = switch (notification.tokenType()) {
+      case APN -> bundleId;
+      case APN_VOIP -> bundleId + ".voip";
+      default -> throw new IllegalArgumentException("Unsupported token type: " + notification.tokenType());
+    };
 
-    if (message.isVoip()) {
-      topic = topic + ".voip";
-    }
-    
-    ListenableFuture<ApnResult> future = apnsClient.send(message.getApnId(), topic,
-                                                         message.getMessage(),
-                                                         Instant.ofEpochMilli(message.getExpirationTime()),
-                                                         message.isVoip());
+    final boolean isVoip = notification.tokenType() == PushNotification.TokenType.APN_VOIP;
 
-    Futures.addCallback(future, new FutureCallback<ApnResult>() {
-      @Override
-      public void onSuccess(@Nullable ApnResult result) {
-        if (message.getChallengeData().isPresent()) return;
-
-        if (result == null) {
-          logger.warn("*** RECEIVED NULL APN RESULT ***");
-        } else if (result.getStatus() == ApnResult.Status.NO_SUCH_USER) {
-          handleUnregisteredUser(message.getApnId(), message.getNumber(), message.getDeviceId());
-        } else if (result.getStatus() == ApnResult.Status.GENERIC_FAILURE) {
-          logger.warn("*** Got APN generic failure: " + result.getReason() + ", " + message.getNumber());
+    final String payload = switch (notification.notificationType()) {
+      case NOTIFICATION -> {
+        if (isVoip) {
+          yield APN_VOIP_NOTIFICATION_PAYLOAD;
+        } else {
+          yield notification.urgent() ? APN_NSE_NOTIFICATION_PAYLOAD : APN_BACKGROUND_PAYLOAD;
         }
       }
 
-      @Override
-      public void onFailure(@Nullable Throwable t) {
-        logger.warn("Got fatal APNS exception", t);
-      }
-    }, executor);
+      case ATTEMPT_LOGIN_NOTIFICATION_HIGH_PRIORITY -> new SimpleApnsPayloadBuilder()
+          .setMutableContent(true)
+          .setLocalizedAlertMessage("APN_Message")
+          .addCustomProperty("attemptLoginContext", notification.data())
+          .build();
 
-    return future;
+      case CHALLENGE -> new SimpleApnsPayloadBuilder()
+          .setContentAvailable(true)
+          .addCustomProperty("challenge", notification.data())
+          .build();
+
+      case RATE_LIMIT_CHALLENGE -> new SimpleApnsPayloadBuilder()
+          .setContentAvailable(true)
+          .addCustomProperty("rateLimitChallenge", notification.data())
+          .build();
+    };
+
+    final PushType pushType = switch (notification.notificationType()) {
+      case NOTIFICATION -> {
+        if (isVoip) {
+          yield PushType.VOIP;
+        } else {
+          yield notification.urgent() ? PushType.ALERT : PushType.BACKGROUND;
+        }
+      }
+      case ATTEMPT_LOGIN_NOTIFICATION_HIGH_PRIORITY -> PushType.ALERT;
+      case CHALLENGE, RATE_LIMIT_CHALLENGE -> PushType.BACKGROUND;
+    };
+
+    final DeliveryPriority deliveryPriority;
+
+    if (pushType == PushType.BACKGROUND) {
+      deliveryPriority = DeliveryPriority.CONSERVE_POWER;
+    } else {
+      deliveryPriority = (notification.urgent() || isVoip)
+          ? DeliveryPriority.IMMEDIATE
+          : DeliveryPriority.CONSERVE_POWER;
+    }
+
+    final String collapseId =
+        (notification.notificationType() == PushNotification.NotificationType.NOTIFICATION && notification.urgent() && !isVoip)
+            ? "incoming-message" : null;
+
+    final Instant start = Instant.now();
+
+    return apnsClient.sendNotification(new SimpleApnsPushNotification(notification.deviceToken(),
+        topic,
+        payload,
+        MAX_EXPIRATION,
+        deliveryPriority,
+        pushType,
+        collapseId))
+        .whenComplete((response, throwable) -> {
+          // Note that we deliberately run this small bit of non-blocking measurement on the "send notification" thread
+          // to avoid any measurement noise that could arise from dispatching to another executor and waiting in its
+          // queue
+          SEND_NOTIFICATION_TIMER.record(Duration.between(start, Instant.now()));
+        })
+        .thenApplyAsync(response -> {
+          final boolean accepted;
+          final String rejectionReason;
+          final boolean unregistered;
+
+          if (response.isAccepted()) {
+            accepted = true;
+            rejectionReason = null;
+            unregistered = false;
+          } else {
+            accepted = false;
+            rejectionReason = response.getRejectionReason().orElse("unknown");
+            unregistered = ("Unregistered".equals(rejectionReason) || "BadDeviceToken".equals(rejectionReason));
+          }
+
+          return new SendPushNotificationResult(accepted, rejectionReason, unregistered);
+        }, executor);
   }
 
   @Override
@@ -113,68 +179,6 @@ public class APNSender implements Managed {
 
   @Override
   public void stop() {
-    this.apnsClient.disconnect();
-  }
-
-  public void setApnFallbackManager(ApnFallbackManager fallbackManager) {
-    this.fallbackManager = fallbackManager;
-  }
-
-  private void handleUnregisteredUser(String registrationId, String number, long deviceId) {
-//    logger.info("Got APN Unregistered: " + number + "," + deviceId);
-
-    Optional<Account> account = accountsManager.get(number);
-
-    if (!account.isPresent()) {
-      logger.info("No account found: " + number);
-      unregisteredEventStale.mark();
-      return;
-    }
-
-    Optional<Device> device = account.get().getDevice(deviceId);
-
-    if (!device.isPresent()) {
-      logger.info("No device found: " + number);
-      unregisteredEventStale.mark();
-      return;
-    }
-
-    if (!registrationId.equals(device.get().getApnId()) &&
-        !registrationId.equals(device.get().getVoipApnId()))
-    {
-      logger.info("Registration ID does not match: " + registrationId + ", " + device.get().getApnId() + ", " + device.get().getVoipApnId());
-      unregisteredEventStale.mark();
-      return;
-    }
-
-//    if (registrationId.equals(device.get().getApnId())) {
-//      logger.info("APN Unregister APN ID matches! " + number + ", " + deviceId);
-//    } else if (registrationId.equals(device.get().getVoipApnId())) {
-//      logger.info("APN Unregister VoIP ID matches! " + number + ", " + deviceId);
-//    }
-
-    long tokenTimestamp = device.get().getPushTimestamp();
-
-    if (tokenTimestamp != 0 && System.currentTimeMillis() < tokenTimestamp + TimeUnit.SECONDS.toMillis(10))
-    {
-      logger.info("APN Unregister push timestamp is more recent: " + tokenTimestamp + ", " + number);
-      unregisteredEventStale.mark();
-      return;
-    }
-
-//    logger.info("APN Unregister timestamp matches: " + device.get().getApnId() + ", " + device.get().getVoipApnId());
-//    device.get().setApnId(null);
-//    device.get().setVoipApnId(null);
-//    device.get().setFetchesMessages(false);
-//    accountsManager.update(account.get());
-
-//    if (fallbackManager != null) {
-//      fallbackManager.cancel(new WebsocketAddress(number, deviceId));
-//    }
-
-    if (fallbackManager != null) {
-      RedisOperation.unchecked(() -> fallbackManager.cancel(account.get(), device.get()));
-      unregisteredEventFresh.mark();
-    }
+    this.apnsClient.close().join();
   }
 }

@@ -1,34 +1,46 @@
 /*
- * Copyright 2013-2020 Signal Messenger, LLC
+ * Copyright 2013 Signal Messenger, LLC
  * SPDX-License-Identifier: AGPL-3.0-only
  */
 
 package org.whispersystems.textsecuregcm.tests.util;
 
-import static org.mockito.ArgumentMatchers.argThat;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.reset;
 import static org.mockito.Mockito.when;
 
 import com.google.common.collect.ImmutableMap;
+import com.google.i18n.phonenumbers.PhoneNumberUtil;
+import com.google.i18n.phonenumbers.Phonenumber;
 import io.dropwizard.auth.AuthFilter;
 import io.dropwizard.auth.PolymorphicAuthDynamicFeature;
 import io.dropwizard.auth.basic.BasicCredentialAuthFilter;
 import io.dropwizard.auth.basic.BasicCredentials;
 import java.security.Principal;
+import java.util.ArrayList;
+import java.util.Base64;
+import java.util.Collection;
+import java.util.HashSet;
+import java.util.List;
 import java.util.Optional;
 import java.util.Random;
 import java.util.UUID;
-import org.mockito.ArgumentMatcher;
+import org.junit.jupiter.api.extension.AfterEachCallback;
+import org.junit.jupiter.api.extension.ExtensionContext;
+import org.signal.libsignal.protocol.IdentityKey;
+import org.signal.libsignal.protocol.ecc.Curve;
+import org.signal.libsignal.protocol.ecc.ECKeyPair;
 import org.whispersystems.textsecuregcm.auth.AccountAuthenticator;
-import org.whispersystems.textsecuregcm.auth.AmbiguousIdentifier;
-import org.whispersystems.textsecuregcm.auth.AuthenticationCredentials;
-import org.whispersystems.textsecuregcm.auth.DisabledPermittedAccount;
-import org.whispersystems.textsecuregcm.auth.DisabledPermittedAccountAuthenticator;
+import org.whispersystems.textsecuregcm.auth.AuthenticatedAccount;
+import org.whispersystems.textsecuregcm.auth.SaltedTokenHash;
+import org.whispersystems.textsecuregcm.identity.AciServiceIdentifier;
+import org.whispersystems.textsecuregcm.identity.IdentityType;
+import org.whispersystems.textsecuregcm.identity.PniServiceIdentifier;
 import org.whispersystems.textsecuregcm.storage.Account;
 import org.whispersystems.textsecuregcm.storage.AccountsManager;
 import org.whispersystems.textsecuregcm.storage.Device;
-import org.whispersystems.textsecuregcm.util.Base64;
+import org.whispersystems.textsecuregcm.util.HeaderUtils;
 
 public class AuthHelper {
   // Static seed to ensure reproducible tests.
@@ -38,146 +50,184 @@ public class AuthHelper {
 
   public static final String VALID_NUMBER   = "+14150000000";
   public static final UUID   VALID_UUID     = UUID.randomUUID();
+  public static final UUID   VALID_PNI      = UUID.randomUUID();
   public static final String VALID_PASSWORD = "foo";
 
   public static final String VALID_NUMBER_TWO = "+201511111110";
   public static final UUID   VALID_UUID_TWO    = UUID.randomUUID();
+  public static final UUID   VALID_PNI_TWO     = UUID.randomUUID();
   public static final String VALID_PASSWORD_TWO = "baz";
 
-  public static final String INVVALID_NUMBER  = "+14151111111";
+  public static final String VALID_NUMBER_3           = "+14445556666";
+  public static final UUID   VALID_UUID_3             = UUID.randomUUID();
+  public static final UUID   VALID_PNI_3              = UUID.randomUUID();
+  public static final String VALID_PASSWORD_3_PRIMARY = "3primary";
+  public static final String VALID_PASSWORD_3_LINKED  = "3linked";
+
   public static final UUID   INVALID_UUID     = UUID.randomUUID();
   public static final String INVALID_PASSWORD = "bar";
-
-  public static final String DISABLED_NUMBER = "+78888888";
-  public static final UUID   DISABLED_UUID     = UUID.randomUUID();
-  public static final String DISABLED_PASSWORD = "poof";
 
   public static final String UNDISCOVERABLE_NUMBER   = "+18005551234";
   public static final UUID   UNDISCOVERABLE_UUID     = UUID.randomUUID();
   public static final String UNDISCOVERABLE_PASSWORD = "IT'S A SECRET TO EVERYBODY.";
 
-  public static final String VALID_IDENTITY = "BcxxDU9FGMda70E7+Uvm7pnQcEdXQ64aJCpPUeRSfcFo";
+  public static final ECKeyPair VALID_IDENTITY_KEY_PAIR = Curve.generateKeyPair();
+  public static final IdentityKey VALID_IDENTITY = new IdentityKey(VALID_IDENTITY_KEY_PAIR.getPublicKey());
+
+  public static final ECKeyPair VALID_PNI_IDENTITY_KEY_PAIR = Curve.generateKeyPair();
+  public static final IdentityKey VALID_PNI_IDENTITY = new IdentityKey(VALID_PNI_IDENTITY_KEY_PAIR.getPublicKey());
 
   public static AccountsManager ACCOUNTS_MANAGER       = mock(AccountsManager.class);
   public static Account         VALID_ACCOUNT          = mock(Account.class        );
   public static Account         VALID_ACCOUNT_TWO      = mock(Account.class        );
-  public static Account         DISABLED_ACCOUNT       = mock(Account.class        );
   public static Account         UNDISCOVERABLE_ACCOUNT = mock(Account.class        );
+  public static Account         VALID_ACCOUNT_3        = mock(Account.class        );
 
-  public static Device VALID_DEVICE          = mock(Device.class);
-  public static Device VALID_DEVICE_TWO      = mock(Device.class);
-  public static Device DISABLED_DEVICE       = mock(Device.class);
-  public static Device UNDISCOVERABLE_DEVICE = mock(Device.class);
+  public static Device VALID_DEVICE           = mock(Device.class);
+  public static Device VALID_DEVICE_TWO       = mock(Device.class);
+  public static Device UNDISCOVERABLE_DEVICE  = mock(Device.class);
+  public static Device VALID_DEVICE_3_PRIMARY = mock(Device.class);
+  public static Device VALID_DEVICE_3_LINKED  = mock(Device.class);
 
-  private static AuthenticationCredentials VALID_CREDENTIALS          = mock(AuthenticationCredentials.class);
-  private static AuthenticationCredentials VALID_CREDENTIALS_TWO      = mock(AuthenticationCredentials.class);
-  private static AuthenticationCredentials DISABLED_CREDENTIALS       = mock(AuthenticationCredentials.class);
-  private static AuthenticationCredentials UNDISCOVERABLE_CREDENTIALS = mock(AuthenticationCredentials.class);
+  private static SaltedTokenHash VALID_CREDENTIALS           = mock(SaltedTokenHash.class);
+  private static SaltedTokenHash VALID_CREDENTIALS_TWO       = mock(SaltedTokenHash.class);
+  private static SaltedTokenHash VALID_CREDENTIALS_3_PRIMARY = mock(SaltedTokenHash.class);
+  private static SaltedTokenHash VALID_CREDENTIALS_3_LINKED  = mock(SaltedTokenHash.class);
+  private static SaltedTokenHash UNDISCOVERABLE_CREDENTIALS  = mock(SaltedTokenHash.class);
+
+  private static final Collection<TestAccount> EXTENSION_TEST_ACCOUNTS = new HashSet<>();
 
   public static PolymorphicAuthDynamicFeature<? extends Principal> getAuthFilter() {
     when(VALID_CREDENTIALS.verify("foo")).thenReturn(true);
     when(VALID_CREDENTIALS_TWO.verify("baz")).thenReturn(true);
-    when(DISABLED_CREDENTIALS.verify(DISABLED_PASSWORD)).thenReturn(true);
+    when(VALID_CREDENTIALS_3_PRIMARY.verify(VALID_PASSWORD_3_PRIMARY)).thenReturn(true);
+    when(VALID_CREDENTIALS_3_LINKED.verify(VALID_PASSWORD_3_LINKED)).thenReturn(true);
     when(UNDISCOVERABLE_CREDENTIALS.verify(UNDISCOVERABLE_PASSWORD)).thenReturn(true);
 
-    when(VALID_DEVICE.getAuthenticationCredentials()).thenReturn(VALID_CREDENTIALS);
-    when(VALID_DEVICE_TWO.getAuthenticationCredentials()).thenReturn(VALID_CREDENTIALS_TWO);
-    when(DISABLED_DEVICE.getAuthenticationCredentials()).thenReturn(DISABLED_CREDENTIALS);
-    when(UNDISCOVERABLE_DEVICE.getAuthenticationCredentials()).thenReturn(UNDISCOVERABLE_CREDENTIALS);
+    when(VALID_DEVICE.getAuthTokenHash()).thenReturn(VALID_CREDENTIALS);
+    when(VALID_DEVICE_TWO.getAuthTokenHash()).thenReturn(VALID_CREDENTIALS_TWO);
+    when(VALID_DEVICE_3_PRIMARY.getAuthTokenHash()).thenReturn(VALID_CREDENTIALS_3_PRIMARY);
+    when(VALID_DEVICE_3_LINKED.getAuthTokenHash()).thenReturn(VALID_CREDENTIALS_3_LINKED);
+    when(UNDISCOVERABLE_DEVICE.getAuthTokenHash()).thenReturn(UNDISCOVERABLE_CREDENTIALS);
 
-    when(VALID_DEVICE.isMaster()).thenReturn(true);
-    when(VALID_DEVICE_TWO.isMaster()).thenReturn(true);
-    when(DISABLED_DEVICE.isMaster()).thenReturn(true);
-    when(UNDISCOVERABLE_DEVICE.isMaster()).thenReturn(true);
+    when(VALID_DEVICE.isPrimary()).thenReturn(true);
+    when(VALID_DEVICE_TWO.isPrimary()).thenReturn(true);
+    when(UNDISCOVERABLE_DEVICE.isPrimary()).thenReturn(true);
+    when(VALID_DEVICE_3_PRIMARY.isPrimary()).thenReturn(true);
+    when(VALID_DEVICE_3_LINKED.isPrimary()).thenReturn(false);
 
-    when(VALID_DEVICE.getId()).thenReturn(1L);
-    when(VALID_DEVICE_TWO.getId()).thenReturn(1L);
-    when(DISABLED_DEVICE.getId()).thenReturn(1L);
-    when(UNDISCOVERABLE_DEVICE.getId()).thenReturn(1L);
+    when(VALID_DEVICE.getId()).thenReturn(Device.PRIMARY_ID);
+    when(VALID_DEVICE_TWO.getId()).thenReturn(Device.PRIMARY_ID);
+    when(UNDISCOVERABLE_DEVICE.getId()).thenReturn(Device.PRIMARY_ID);
+    when(VALID_DEVICE_3_PRIMARY.getId()).thenReturn(Device.PRIMARY_ID);
+    when(VALID_DEVICE_3_LINKED.getId()).thenReturn((byte) 2);
 
     when(VALID_DEVICE.isEnabled()).thenReturn(true);
     when(VALID_DEVICE_TWO.isEnabled()).thenReturn(true);
-    when(DISABLED_DEVICE.isEnabled()).thenReturn(false);
-    when(UNDISCOVERABLE_DEVICE.isMaster()).thenReturn(true);
+    when(UNDISCOVERABLE_DEVICE.isPrimary()).thenReturn(true);
+    when(VALID_DEVICE_3_PRIMARY.isEnabled()).thenReturn(true);
+    when(VALID_DEVICE_3_LINKED.isEnabled()).thenReturn(true);
 
-    when(VALID_ACCOUNT.getDevice(1L)).thenReturn(Optional.of(VALID_DEVICE));
-    when(VALID_ACCOUNT.getMasterDevice()).thenReturn(Optional.of(VALID_DEVICE));
-    when(VALID_ACCOUNT_TWO.getDevice(eq(1L))).thenReturn(Optional.of(VALID_DEVICE_TWO));
-    when(VALID_ACCOUNT_TWO.getMasterDevice()).thenReturn(Optional.of(VALID_DEVICE_TWO));
-    when(DISABLED_ACCOUNT.getDevice(eq(1L))).thenReturn(Optional.of(DISABLED_DEVICE));
-    when(DISABLED_ACCOUNT.getMasterDevice()).thenReturn(Optional.of(DISABLED_DEVICE));
-    when(UNDISCOVERABLE_ACCOUNT.getDevice(eq(1L))).thenReturn(Optional.of(UNDISCOVERABLE_DEVICE));
-    when(UNDISCOVERABLE_ACCOUNT.getMasterDevice()).thenReturn(Optional.of(UNDISCOVERABLE_DEVICE));
+    when(VALID_ACCOUNT.getDevice(Device.PRIMARY_ID)).thenReturn(Optional.of(VALID_DEVICE));
+    when(VALID_ACCOUNT.getPrimaryDevice()).thenReturn(VALID_DEVICE);
+    when(VALID_ACCOUNT_TWO.getDevice(eq(Device.PRIMARY_ID))).thenReturn(Optional.of(VALID_DEVICE_TWO));
+    when(VALID_ACCOUNT_TWO.getPrimaryDevice()).thenReturn(VALID_DEVICE_TWO);
+    when(UNDISCOVERABLE_ACCOUNT.getDevice(eq(Device.PRIMARY_ID))).thenReturn(Optional.of(UNDISCOVERABLE_DEVICE));
+    when(UNDISCOVERABLE_ACCOUNT.getPrimaryDevice()).thenReturn(UNDISCOVERABLE_DEVICE);
+    when(VALID_ACCOUNT_3.getDevice(Device.PRIMARY_ID)).thenReturn(Optional.of(VALID_DEVICE_3_PRIMARY));
+    when(VALID_ACCOUNT_3.getPrimaryDevice()).thenReturn(VALID_DEVICE_3_PRIMARY);
+    when(VALID_ACCOUNT_3.getDevice((byte) 2)).thenReturn(Optional.of(VALID_DEVICE_3_LINKED));
 
-    when(VALID_ACCOUNT_TWO.getEnabledDeviceCount()).thenReturn(6);
+    when(VALID_ACCOUNT.getDevices()).thenReturn(List.of(VALID_DEVICE));
+    when(VALID_ACCOUNT_TWO.getDevices()).thenReturn(List.of(VALID_DEVICE_TWO));
+    when(UNDISCOVERABLE_ACCOUNT.getDevices()).thenReturn(List.of(UNDISCOVERABLE_DEVICE));
+    when(VALID_ACCOUNT_3.getDevices()).thenReturn(List.of(VALID_DEVICE_3_PRIMARY, VALID_DEVICE_3_LINKED));
+
+    when(VALID_ACCOUNT_TWO.hasEnabledLinkedDevice()).thenReturn(true);
 
     when(VALID_ACCOUNT.getNumber()).thenReturn(VALID_NUMBER);
     when(VALID_ACCOUNT.getUuid()).thenReturn(VALID_UUID);
+    when(VALID_ACCOUNT.getPhoneNumberIdentifier()).thenReturn(VALID_PNI);
+    when(VALID_ACCOUNT.getIdentifier(IdentityType.ACI)).thenReturn(VALID_UUID);
+    when(VALID_ACCOUNT.getIdentifier(IdentityType.PNI)).thenReturn(VALID_PNI);
     when(VALID_ACCOUNT_TWO.getNumber()).thenReturn(VALID_NUMBER_TWO);
     when(VALID_ACCOUNT_TWO.getUuid()).thenReturn(VALID_UUID_TWO);
-    when(DISABLED_ACCOUNT.getNumber()).thenReturn(DISABLED_NUMBER);
-    when(DISABLED_ACCOUNT.getUuid()).thenReturn(DISABLED_UUID);
+    when(VALID_ACCOUNT_TWO.getPhoneNumberIdentifier()).thenReturn(VALID_PNI_TWO);
+    when(VALID_ACCOUNT_TWO.getIdentifier(IdentityType.ACI)).thenReturn(VALID_UUID_TWO);
+    when(VALID_ACCOUNT_TWO.getPhoneNumberIdentifier()).thenReturn(VALID_PNI_TWO);
     when(UNDISCOVERABLE_ACCOUNT.getNumber()).thenReturn(UNDISCOVERABLE_NUMBER);
     when(UNDISCOVERABLE_ACCOUNT.getUuid()).thenReturn(UNDISCOVERABLE_UUID);
-
-    when(VALID_ACCOUNT.getAuthenticatedDevice()).thenReturn(Optional.of(VALID_DEVICE));
-    when(VALID_ACCOUNT_TWO.getAuthenticatedDevice()).thenReturn(Optional.of(VALID_DEVICE_TWO));
-    when(DISABLED_ACCOUNT.getAuthenticatedDevice()).thenReturn(Optional.of(DISABLED_DEVICE));
-    when(UNDISCOVERABLE_ACCOUNT.getAuthenticatedDevice()).thenReturn(Optional.of(UNDISCOVERABLE_DEVICE));
-
-    when(VALID_ACCOUNT.getRelay()).thenReturn(Optional.empty());
-    when(VALID_ACCOUNT_TWO.getRelay()).thenReturn(Optional.empty());
-    when(UNDISCOVERABLE_ACCOUNT.getRelay()).thenReturn(Optional.empty());
+    when(UNDISCOVERABLE_ACCOUNT.getIdentifier(IdentityType.ACI)).thenReturn(UNDISCOVERABLE_UUID);
+    when(VALID_ACCOUNT_3.getNumber()).thenReturn(VALID_NUMBER_3);
+    when(VALID_ACCOUNT_3.getUuid()).thenReturn(VALID_UUID_3);
+    when(VALID_ACCOUNT_3.getPhoneNumberIdentifier()).thenReturn(VALID_PNI_3);
+    when(VALID_ACCOUNT_3.getIdentifier(IdentityType.ACI)).thenReturn(VALID_UUID_3);
+    when(VALID_ACCOUNT_3.getIdentifier(IdentityType.PNI)).thenReturn(VALID_PNI_3);
 
     when(VALID_ACCOUNT.isEnabled()).thenReturn(true);
     when(VALID_ACCOUNT_TWO.isEnabled()).thenReturn(true);
-    when(DISABLED_ACCOUNT.isEnabled()).thenReturn(false);
     when(UNDISCOVERABLE_ACCOUNT.isEnabled()).thenReturn(true);
+    when(VALID_ACCOUNT_3.isEnabled()).thenReturn(true);
 
     when(VALID_ACCOUNT.isDiscoverableByPhoneNumber()).thenReturn(true);
     when(VALID_ACCOUNT_TWO.isDiscoverableByPhoneNumber()).thenReturn(true);
-    when(DISABLED_ACCOUNT.isDiscoverableByPhoneNumber()).thenReturn(true);
     when(UNDISCOVERABLE_ACCOUNT.isDiscoverableByPhoneNumber()).thenReturn(false);
+    when(VALID_ACCOUNT_3.isDiscoverableByPhoneNumber()).thenReturn(true);
 
-    when(VALID_ACCOUNT.getIdentityKey()).thenReturn(VALID_IDENTITY);
+    when(VALID_ACCOUNT.isIdentifiedBy(new AciServiceIdentifier(VALID_UUID))).thenReturn(true);
+    when(VALID_ACCOUNT.isIdentifiedBy(new PniServiceIdentifier(VALID_PNI))).thenReturn(true);
+    when(VALID_ACCOUNT_TWO.isIdentifiedBy(new AciServiceIdentifier(VALID_UUID_TWO))).thenReturn(true);
+    when(VALID_ACCOUNT_TWO.isIdentifiedBy(new PniServiceIdentifier(VALID_PNI_TWO))).thenReturn(true);
+    when(UNDISCOVERABLE_ACCOUNT.isIdentifiedBy(new AciServiceIdentifier(UNDISCOVERABLE_UUID))).thenReturn(true);
+    when(VALID_ACCOUNT_3.isIdentifiedBy(new AciServiceIdentifier(VALID_UUID_3))).thenReturn(true);
+    when(VALID_ACCOUNT_3.isIdentifiedBy(new PniServiceIdentifier(VALID_PNI_3))).thenReturn(true);
 
-    when(ACCOUNTS_MANAGER.get(VALID_NUMBER)).thenReturn(Optional.of(VALID_ACCOUNT));
-    when(ACCOUNTS_MANAGER.get(VALID_UUID)).thenReturn(Optional.of(VALID_ACCOUNT));
-    when(ACCOUNTS_MANAGER.get(argThat((ArgumentMatcher<AmbiguousIdentifier>) identifier -> identifier != null && identifier.hasNumber() && identifier.getNumber().equals(VALID_NUMBER)))).thenReturn(Optional.of(VALID_ACCOUNT));
-    when(ACCOUNTS_MANAGER.get(argThat((ArgumentMatcher<AmbiguousIdentifier>) identifier -> identifier != null && identifier.hasUuid() && identifier.getUuid().equals(VALID_UUID)))).thenReturn(Optional.of(VALID_ACCOUNT));
+    when(VALID_ACCOUNT.getIdentityKey(IdentityType.ACI)).thenReturn(VALID_IDENTITY);
+    when(VALID_ACCOUNT.getIdentityKey(IdentityType.PNI)).thenReturn(VALID_PNI_IDENTITY);
 
-    when(ACCOUNTS_MANAGER.get(VALID_NUMBER_TWO)).thenReturn(Optional.of(VALID_ACCOUNT_TWO));
-    when(ACCOUNTS_MANAGER.get(VALID_UUID_TWO)).thenReturn(Optional.of(VALID_ACCOUNT_TWO));
-    when(ACCOUNTS_MANAGER.get(argThat((ArgumentMatcher<AmbiguousIdentifier>) identifier -> identifier != null && identifier.hasNumber() && identifier.getNumber().equals(VALID_NUMBER_TWO)))).thenReturn(Optional.of(VALID_ACCOUNT_TWO));
-    when(ACCOUNTS_MANAGER.get(argThat((ArgumentMatcher<AmbiguousIdentifier>) identifier -> identifier != null && identifier.hasUuid() && identifier.getUuid().equals(VALID_UUID_TWO)))).thenReturn(Optional.of(VALID_ACCOUNT_TWO));
+    reset(ACCOUNTS_MANAGER);
 
-    when(ACCOUNTS_MANAGER.get(DISABLED_NUMBER)).thenReturn(Optional.of(DISABLED_ACCOUNT));
-    when(ACCOUNTS_MANAGER.get(DISABLED_UUID)).thenReturn(Optional.of(DISABLED_ACCOUNT));
-    when(ACCOUNTS_MANAGER.get(argThat((ArgumentMatcher<AmbiguousIdentifier>) identifier -> identifier != null && identifier.hasNumber() && identifier.getNumber().equals(DISABLED_NUMBER)))).thenReturn(Optional.of(DISABLED_ACCOUNT));
-    when(ACCOUNTS_MANAGER.get(argThat((ArgumentMatcher<AmbiguousIdentifier>) identifier -> identifier != null && identifier.hasUuid() && identifier.getUuid().equals(DISABLED_UUID)))).thenReturn(Optional.of(DISABLED_ACCOUNT));
+    when(ACCOUNTS_MANAGER.getByE164(VALID_NUMBER)).thenReturn(Optional.of(VALID_ACCOUNT));
+    when(ACCOUNTS_MANAGER.getByAccountIdentifier(VALID_UUID)).thenReturn(Optional.of(VALID_ACCOUNT));
+    when(ACCOUNTS_MANAGER.getByPhoneNumberIdentifier(VALID_PNI)).thenReturn(Optional.of(VALID_ACCOUNT));
 
-    when(ACCOUNTS_MANAGER.get(UNDISCOVERABLE_NUMBER)).thenReturn(Optional.of(UNDISCOVERABLE_ACCOUNT));
-    when(ACCOUNTS_MANAGER.get(UNDISCOVERABLE_UUID)).thenReturn(Optional.of(UNDISCOVERABLE_ACCOUNT));
-    when(ACCOUNTS_MANAGER.get(argThat((ArgumentMatcher<AmbiguousIdentifier>) identifier -> identifier != null && identifier.hasNumber() && identifier.getNumber().equals(UNDISCOVERABLE_NUMBER)))).thenReturn(Optional.of(UNDISCOVERABLE_ACCOUNT));
-    when(ACCOUNTS_MANAGER.get(argThat((ArgumentMatcher<AmbiguousIdentifier>) identifier -> identifier != null && identifier.hasUuid() && identifier.getUuid().equals(UNDISCOVERABLE_UUID)))).thenReturn(Optional.of(UNDISCOVERABLE_ACCOUNT));
+    when(ACCOUNTS_MANAGER.getByE164(VALID_NUMBER_TWO)).thenReturn(Optional.of(VALID_ACCOUNT_TWO));
+    when(ACCOUNTS_MANAGER.getByAccountIdentifier(VALID_UUID_TWO)).thenReturn(Optional.of(VALID_ACCOUNT_TWO));
+    when(ACCOUNTS_MANAGER.getByPhoneNumberIdentifier(VALID_PNI_TWO)).thenReturn(Optional.of(VALID_ACCOUNT_TWO));
+
+    when(ACCOUNTS_MANAGER.getByE164(UNDISCOVERABLE_NUMBER)).thenReturn(Optional.of(UNDISCOVERABLE_ACCOUNT));
+    when(ACCOUNTS_MANAGER.getByAccountIdentifier(UNDISCOVERABLE_UUID)).thenReturn(Optional.of(UNDISCOVERABLE_ACCOUNT));
+
+    when(ACCOUNTS_MANAGER.getByE164(VALID_NUMBER_3)).thenReturn(Optional.of(VALID_ACCOUNT_3));
+    when(ACCOUNTS_MANAGER.getByAccountIdentifier(VALID_UUID_3)).thenReturn(Optional.of(VALID_ACCOUNT_3));
+    when(ACCOUNTS_MANAGER.getByPhoneNumberIdentifier(VALID_PNI_3)).thenReturn(Optional.of(VALID_ACCOUNT_3));
+
+    AccountsHelper.setupMockUpdateForAuthHelper(ACCOUNTS_MANAGER);
 
     for (TestAccount testAccount : TEST_ACCOUNTS) {
       testAccount.setup(ACCOUNTS_MANAGER);
     }
 
-    AuthFilter<BasicCredentials, Account>                  accountAuthFilter                  = new BasicCredentialAuthFilter.Builder<Account>().setAuthenticator(new AccountAuthenticator(ACCOUNTS_MANAGER)).buildAuthFilter                                  ();
-    AuthFilter<BasicCredentials, DisabledPermittedAccount> disabledPermittedAccountAuthFilter = new BasicCredentialAuthFilter.Builder<DisabledPermittedAccount>().setAuthenticator(new DisabledPermittedAccountAuthenticator(ACCOUNTS_MANAGER)).buildAuthFilter();
+    AuthFilter<BasicCredentials, AuthenticatedAccount> accountAuthFilter = new BasicCredentialAuthFilter.Builder<AuthenticatedAccount>().setAuthenticator(
+        new AccountAuthenticator(ACCOUNTS_MANAGER)).buildAuthFilter();
 
-    return new PolymorphicAuthDynamicFeature<>(ImmutableMap.of(Account.class, accountAuthFilter,
-                                                               DisabledPermittedAccount.class, disabledPermittedAccountAuthFilter));
+    return new PolymorphicAuthDynamicFeature<>(ImmutableMap.of(AuthenticatedAccount.class, accountAuthFilter));
   }
 
-  public static String getAuthHeader(String number, String password) {
-    return "Basic " + Base64.encodeBytes((number + ":" + password).getBytes());
+  public static String getAuthHeader(UUID uuid, byte deviceId, String password) {
+    return HeaderUtils.basicAuthHeader(uuid.toString() + "." + deviceId, password);
+  }
+
+  public static String getAuthHeader(UUID uuid, String password) {
+    return HeaderUtils.basicAuthHeader(uuid.toString(), password);
+  }
+
+  public static String getProvisioningAuthHeader(String number, String password) {
+    return HeaderUtils.basicAuthHeader(number, password);
   }
 
   public static String getUnidentifiedAccessHeader(byte[] key) {
-    return Base64.encodeBytes(key);
+    return Base64.getEncoder().encodeToString(key);
   }
 
   public static UUID getRandomUUID(Random random) {
@@ -196,7 +246,7 @@ public class AuthHelper {
     public final String                    password;
     public final Account                   account                   = mock(Account.class);
     public final Device                    device                    = mock(Device.class);
-    public final AuthenticationCredentials authenticationCredentials = mock(AuthenticationCredentials.class);
+    public final SaltedTokenHash saltedTokenHash = mock(SaltedTokenHash.class);
 
     public TestAccount(String number, UUID uuid, String password) {
       this.number = number;
@@ -205,26 +255,27 @@ public class AuthHelper {
     }
 
     public String getAuthHeader() {
-      return AuthHelper.getAuthHeader(number, password);
+      return AuthHelper.getAuthHeader(uuid, password);
     }
 
     private void setup(final AccountsManager accountsManager) {
-      when(authenticationCredentials.verify(password)).thenReturn(true);
-      when(device.getAuthenticationCredentials()).thenReturn(authenticationCredentials);
-      when(device.isMaster()).thenReturn(true);
-      when(device.getId()).thenReturn(1L);
+      when(saltedTokenHash.verify(password)).thenReturn(true);
+      when(device.getAuthTokenHash()).thenReturn(saltedTokenHash);
+      when(device.isPrimary()).thenReturn(true);
+      when(device.getId()).thenReturn(Device.PRIMARY_ID);
       when(device.isEnabled()).thenReturn(true);
-      when(account.getDevice(1L)).thenReturn(Optional.of(device));
-      when(account.getMasterDevice()).thenReturn(Optional.of(device));
+      when(account.getDevice(Device.PRIMARY_ID)).thenReturn(Optional.of(device));
+      when(account.getPrimaryDevice()).thenReturn(device);
       when(account.getNumber()).thenReturn(number);
       when(account.getUuid()).thenReturn(uuid);
-      when(account.getAuthenticatedDevice()).thenReturn(Optional.of(device));
-      when(account.getRelay()).thenReturn(Optional.empty());
       when(account.isEnabled()).thenReturn(true);
-      when(accountsManager.get(number)).thenReturn(Optional.of(account));
-      when(accountsManager.get(uuid)).thenReturn(Optional.of(account));
-      when(accountsManager.get(argThat((ArgumentMatcher<AmbiguousIdentifier>) identifier -> identifier != null && identifier.hasNumber() && identifier.getNumber().equals(number)))).thenReturn(Optional.of(account));
-      when(accountsManager.get(argThat((ArgumentMatcher<AmbiguousIdentifier>) identifier -> identifier != null && identifier.hasUuid() && identifier.getUuid().equals(uuid)))).thenReturn(Optional.of(account));
+      when(accountsManager.getByE164(number)).thenReturn(Optional.of(account));
+      when(accountsManager.getByAccountIdentifier(uuid)).thenReturn(Optional.of(account));
+    }
+
+    private void teardown(final AccountsManager accountsManager) {
+      when(accountsManager.getByAccountIdentifier(uuid)).thenReturn(Optional.empty());
+      when(accountsManager.getByE164(number)).thenReturn(Optional.empty());
     }
   }
 
@@ -236,5 +287,34 @@ public class AuthHelper {
       testAccounts[i] = new TestAccount("+" + currentNumber, getRandomUUID(random), "TestAccountPassword-" + currentNumber);
     }
     return testAccounts;
+  }
+
+  /**
+   * JUnit 5 extension for creating {@link TestAccount}s scoped to a single test
+   */
+  public static class AuthFilterExtension implements AfterEachCallback {
+
+    public TestAccount createTestAccount() {
+      final UUID uuid = UUID.randomUUID();
+      final String region = new ArrayList<>((PhoneNumberUtil.getInstance().getSupportedRegions())).get(
+          EXTENSION_TEST_ACCOUNTS.size());
+      final Phonenumber.PhoneNumber phoneNumber = PhoneNumberUtil.getInstance().getExampleNumber(region);
+
+      final TestAccount testAccount = new TestAccount(
+          PhoneNumberUtil.getInstance().format(phoneNumber, PhoneNumberUtil.PhoneNumberFormat.E164), uuid,
+          "extension-password-" + region);
+      testAccount.setup(ACCOUNTS_MANAGER);
+
+      EXTENSION_TEST_ACCOUNTS.add(testAccount);
+
+      return testAccount;
+    }
+
+    @Override
+    public void afterEach(final ExtensionContext context) {
+      EXTENSION_TEST_ACCOUNTS.forEach(testAccount -> testAccount.teardown(ACCOUNTS_MANAGER));
+
+      EXTENSION_TEST_ACCOUNTS.clear();
+    }
   }
 }

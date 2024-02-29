@@ -8,14 +8,15 @@ package org.whispersystems.textsecuregcm.controllers;
 import java.util.List;
 
 
-public class StaleDevicesException extends Throwable {
-  private final List<Long> staleDevices;
+public class StaleDevicesException extends Exception {
 
-  public StaleDevicesException(List<Long> staleDevices) {
+  private final List<Byte> staleDevices;
+
+  public StaleDevicesException(List<Byte> staleDevices) {
     this.staleDevices = staleDevices;
   }
 
-  public List<Long> getStaleDevices() {
+  public List<Byte> getStaleDevices() {
     return staleDevices;
   }
 }

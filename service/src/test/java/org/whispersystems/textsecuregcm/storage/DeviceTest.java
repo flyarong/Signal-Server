@@ -1,124 +1,88 @@
 /*
- * Copyright 2013-2020 Signal Messenger, LLC
+ * Copyright 2013-2022 Signal Messenger, LLC
  * SPDX-License-Identifier: AGPL-3.0-only
  */
 
 package org.whispersystems.textsecuregcm.storage;
 
-import junitparams.JUnitParamsRunner;
-import junitparams.Parameters;
-import org.junit.Test;
-import org.junit.runner.RunWith;
-import org.whispersystems.textsecuregcm.entities.SignedPreKey;
+import static org.junit.jupiter.api.Assertions.assertEquals;
 
 import java.time.Duration;
+import java.time.Instant;
+import java.util.stream.Stream;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.Arguments;
+import org.junit.jupiter.params.provider.CsvSource;
+import org.junit.jupiter.params.provider.MethodSource;
 
-import static org.junit.Assert.*;
-import static org.mockito.Mockito.mock;
+class DeviceTest {
 
-@RunWith(JUnitParamsRunner.class)
-public class DeviceTest {
+  @ParameterizedTest
+  @MethodSource
+  void testIsEnabled(final boolean primary, final boolean fetchesMessages, final String apnId, final String gcmId,
+      final Duration timeSinceLastSeen, final boolean expectEnabled) {
 
-    @Test
-    @Parameters(method = "argumentsForTestIsEnabled")
-    public void testIsEnabled(final boolean master, final boolean fetchesMessages, final String apnId, final String gcmId, final SignedPreKey signedPreKey, final Duration timeSinceLastSeen, final boolean expectEnabled) {
-        final long lastSeen = System.currentTimeMillis() - timeSinceLastSeen.toMillis();
-        final Device device = new Device(master ? 1 : 2, "test", "auth-token", "salt", gcmId, apnId, null, fetchesMessages, 1, signedPreKey, lastSeen, lastSeen, "user-agent", 0, null);
+    final long lastSeen = System.currentTimeMillis() - timeSinceLastSeen.toMillis();
 
-        assertEquals(expectEnabled, device.isEnabled());
-    }
+    final Device device = new Device();
+    device.setId(primary ? Device.PRIMARY_ID : Device.PRIMARY_ID + 1);
+    device.setFetchesMessages(fetchesMessages);
+    device.setApnId(apnId);
+    device.setGcmId(gcmId);
+    device.setCreated(lastSeen);
+    device.setLastSeen(lastSeen);
 
-    private static Object argumentsForTestIsEnabled() {
-        return new Object[] {
-                //             master fetchesMessages apnId     gcmId     signedPreKey              lastSeen             expectEnabled
-                new Object[] { true,  false,          null,     null,     null,                     Duration.ofDays(60), false },
-                new Object[] { true,  false,          null,     null,     null,                     Duration.ofDays(1),  false },
-                new Object[] { true,  false,          null,     null,     mock(SignedPreKey.class), Duration.ofDays(60), false },
-                new Object[] { true,  false,          null,     null,     mock(SignedPreKey.class), Duration.ofDays(1),  false },
-                new Object[] { true,  false,          null,     "gcm-id", null,                     Duration.ofDays(60), false },
-                new Object[] { true,  false,          null,     "gcm-id", null,                     Duration.ofDays(1),  false },
-                new Object[] { true,  false,          null,     "gcm-id", mock(SignedPreKey.class), Duration.ofDays(60), true  },
-                new Object[] { true,  false,          null,     "gcm-id", mock(SignedPreKey.class), Duration.ofDays(1),  true  },
-                new Object[] { true,  false,          "apn-id", null,     null,                     Duration.ofDays(60), false },
-                new Object[] { true,  false,          "apn-id", null,     null,                     Duration.ofDays(1),  false },
-                new Object[] { true,  false,          "apn-id", null,     mock(SignedPreKey.class), Duration.ofDays(60), true  },
-                new Object[] { true,  false,          "apn-id", null,     mock(SignedPreKey.class), Duration.ofDays(1),  true  },
-                new Object[] { true,  true,           null,     null,     null,                     Duration.ofDays(60), false },
-                new Object[] { true,  true,           null,     null,     null,                     Duration.ofDays(1),  false },
-                new Object[] { true,  true,           null,     null,     mock(SignedPreKey.class), Duration.ofDays(60), true  },
-                new Object[] { true,  true,           null,     null,     mock(SignedPreKey.class), Duration.ofDays(1),  true  },
-                new Object[] { false, false,          null,     null,     null,                     Duration.ofDays(60), false },
-                new Object[] { false, false,          null,     null,     null,                     Duration.ofDays(1),  false },
-                new Object[] { false, false,          null,     null,     mock(SignedPreKey.class), Duration.ofDays(60), false },
-                new Object[] { false, false,          null,     null,     mock(SignedPreKey.class), Duration.ofDays(1),  false },
-                new Object[] { false, false,          null,     "gcm-id", null,                     Duration.ofDays(60), false },
-                new Object[] { false, false,          null,     "gcm-id", null,                     Duration.ofDays(1),  false },
-                new Object[] { false, false,          null,     "gcm-id", mock(SignedPreKey.class), Duration.ofDays(60), false },
-                new Object[] { false, false,          null,     "gcm-id", mock(SignedPreKey.class), Duration.ofDays(1),  true  },
-                new Object[] { false, false,          "apn-id", null,     null,                     Duration.ofDays(60), false },
-                new Object[] { false, false,          "apn-id", null,     null,                     Duration.ofDays(1),  false },
-                new Object[] { false, false,          "apn-id", null,     mock(SignedPreKey.class), Duration.ofDays(60), false },
-                new Object[] { false, false,          "apn-id", null,     mock(SignedPreKey.class), Duration.ofDays(1),  true  },
-                new Object[] { false, true,           null,     null,     null,                     Duration.ofDays(60), false },
-                new Object[] { false, true,           null,     null,     null,                     Duration.ofDays(1),  false },
-                new Object[] { false, true,           null,     null,     mock(SignedPreKey.class), Duration.ofDays(60), false },
-                new Object[] { false, true,           null,     null,     mock(SignedPreKey.class), Duration.ofDays(1),  true  }
-        };
-    }
+    assertEquals(expectEnabled, device.isEnabled());
+  }
 
-    @Test
-    @Parameters(method = "argumentsForTestIsGroupsV2Supported")
-    public void testIsGroupsV2Supported(final boolean master, final String apnId, final boolean gv2Capability, final boolean gv2_2Capability, final boolean gv2_3Capability, final boolean expectGv2Supported) {
-        final Device.DeviceCapabilities capabilities = new Device.DeviceCapabilities(gv2Capability, gv2_2Capability, gv2_3Capability, false, false, false);
-        final Device                    device       = new Device(master ? 1 : 2, "test", "auth-token", "salt",
-            null, apnId, null, false, 1, null, 0, 0, "user-agent", 0, capabilities);
+  private static Stream<Arguments> testIsEnabled() {
+    return Stream.of(
+        //           primary fetchesMessages apnId     gcmId     lastSeen             expectEnabled
+        Arguments.of(true,   false,          null,     null,     Duration.ofDays(60), false),
+        Arguments.of(true,   false,          null,     null,     Duration.ofDays(1),  false),
+        Arguments.of(true,   false,          null,     "gcm-id", Duration.ofDays(60), true),
+        Arguments.of(true,   false,          null,     "gcm-id", Duration.ofDays(1),  true),
+        Arguments.of(true,   false,          "apn-id", null,     Duration.ofDays(60), true),
+        Arguments.of(true,   false,          "apn-id", null,     Duration.ofDays(1),  true),
+        Arguments.of(true,   true,           null,     null,     Duration.ofDays(60), true),
+        Arguments.of(true,   true,           null,     null,     Duration.ofDays(1),  true),
+        Arguments.of(false,  false,          null,     null,     Duration.ofDays(60), false),
+        Arguments.of(false,  false,          null,     null,     Duration.ofDays(1),  false),
+        Arguments.of(false,  false,          null,     "gcm-id", Duration.ofDays(60), false),
+        Arguments.of(false,  false,          null,     "gcm-id", Duration.ofDays(1),  true),
+        Arguments.of(false,  false,          "apn-id", null,     Duration.ofDays(60), false),
+        Arguments.of(false,  false,          "apn-id", null,     Duration.ofDays(1),  true),
+        Arguments.of(false,  true,           null,     null,     Duration.ofDays(60), false),
+        Arguments.of(false,  true,           null,     null,     Duration.ofDays(1),  true)
+    );
+  }
 
-        assertEquals(expectGv2Supported, device.isGroupsV2Supported());
-    }
+  @ParameterizedTest
+  @CsvSource({
+      "true, P1D, false",
+      "true, P30D, false",
+      "true, P31D, false",
+      "true, P180D, false",
+      "true, P181D, true",
+      "false, P1D, false",
+      "false, P30D, false",
+      "false, P31D, true",
+      "false, P180D, true",
+  })
+  public void testIsExpired(final boolean primary, final Duration timeSinceLastSeen, final boolean expectExpired) {
 
-    private static Object argumentsForTestIsGroupsV2Supported() {
-        return new Object[] {
-                //             master apnId     gv2    gv2-2  gv2-3  capable
+    final long lastSeen = Instant.now()
+        .minus(timeSinceLastSeen)
+        // buffer for test runtime
+        .plusSeconds(1)
+        .toEpochMilli();
 
-                // Android master
-                new Object[] { true,  null,     false, false, false, false },
-                new Object[] { true,  null,     true,  false, false, false },
-                new Object[] { true,  null,     false, true,  false, false },
-                new Object[] { true,  null,     true,  true,  false, false },
-                new Object[] { true,  null,     false, false, true,  true  },
-                new Object[] { true,  null,     true,  false, true,  true  },
-                new Object[] { true,  null,     false, true,  true,  true  },
-                new Object[] { true,  null,     true,  true,  true,  true  },
+    final Device device = new Device();
+    device.setId(primary ? Device.PRIMARY_ID : Device.PRIMARY_ID + 1);
+    device.setCreated(lastSeen);
+    device.setLastSeen(lastSeen);
 
-                // iOs master
-                new Object[] { true,  "apn-id", false, false, false, false },
-                new Object[] { true,  "apn-id", true,  false, false, false },
-                new Object[] { true,  "apn-id", false, true,  false, true  },
-                new Object[] { true,  "apn-id", true,  true,  false, true  },
-                new Object[] { true,  "apn-id", false, false, true,  true  },
-                new Object[] { true,  "apn-id", true,  false, true,  true  },
-                new Object[] { true,  "apn-id", false, true,  true,  true  },
-                new Object[] { true,  "apn-id", true,  true,  true,  true  },
+    assertEquals(expectExpired, device.isExpired());
+  }
 
-                // iOs linked
-                new Object[] { false, "apn-id", false, false, false, false },
-                new Object[] { false, "apn-id", true,  false, false, false },
-                new Object[] { false, "apn-id", false, true,  false, true  },
-                new Object[] { false, "apn-id", true,  true,  false, true  },
-                new Object[] { false, "apn-id", false, false, true,  true  },
-                new Object[] { false, "apn-id", true,  false, true,  true  },
-                new Object[] { false, "apn-id", false, true,  true,  true  },
-                new Object[] { false, "apn-id", true,  true,  true,  true  },
-
-                // desktop linked
-                new Object[] { false, null,     false, false, false, false },
-                new Object[] { false, null,     true,  false, false, false },
-                new Object[] { false, null,     false, true,  false, false },
-                new Object[] { false, null,     true,  true,  false, false },
-                new Object[] { false, null,     false, false, true,  true  },
-                new Object[] { false, null,     true,  false, true,  true  },
-                new Object[] { false, null,     false, true,  true,  true  },
-                new Object[] { false, null,     true,  true,  true,  true  }
-        };
-    }
 }

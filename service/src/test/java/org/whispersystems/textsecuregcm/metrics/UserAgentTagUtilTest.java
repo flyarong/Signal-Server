@@ -1,94 +1,74 @@
 /*
- * Copyright 2013-2020 Signal Messenger, LLC
+ * Copyright 2013-2022 Signal Messenger, LLC
  * SPDX-License-Identifier: AGPL-3.0-only
  */
 
 package org.whispersystems.textsecuregcm.metrics;
 
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.when;
+
+import com.vdurmont.semver4j.Semver;
 import io.micrometer.core.instrument.Tag;
-import junitparams.JUnitParamsRunner;
-import junitparams.Parameters;
-import org.junit.Test;
-import org.junit.runner.RunWith;
+import java.util.Collections;
+import java.util.Map;
+import java.util.Optional;
+import java.util.Set;
+import java.util.stream.Stream;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.Arguments;
+import org.junit.jupiter.params.provider.MethodSource;
+import org.whispersystems.textsecuregcm.storage.ClientReleaseManager;
+import org.whispersystems.textsecuregcm.util.ua.ClientPlatform;
 
-import java.util.HashSet;
-import java.util.List;
+class UserAgentTagUtilTest {
 
-import static org.junit.Assert.assertEquals;
-import static org.junit.Assert.assertTrue;
+  @ParameterizedTest
+  @MethodSource
+  void getPlatformTag(final String userAgent, final Tag expectedTag) {
+    assertEquals(expectedTag, UserAgentTagUtil.getPlatformTag(userAgent));
+  }
 
-@RunWith(JUnitParamsRunner.class)
-public class UserAgentTagUtilTest {
+  private static Stream<Arguments> getPlatformTag() {
+    return Stream.of(
+        Arguments.of("This is obviously not a reasonable User-Agent string.", Tag.of(UserAgentTagUtil.PLATFORM_TAG, "unrecognized")),
+        Arguments.of(null, Tag.of(UserAgentTagUtil.PLATFORM_TAG, "unrecognized")),
+        Arguments.of("Signal-Android/4.53.7 (Android 8.1)", Tag.of(UserAgentTagUtil.PLATFORM_TAG, "android")),
+        Arguments.of("Signal-Desktop/1.2.3", Tag.of(UserAgentTagUtil.PLATFORM_TAG, "desktop")),
+        Arguments.of("Signal-iOS/3.9.0 (iPhone; iOS 12.2; Scale/3.00)", Tag.of(UserAgentTagUtil.PLATFORM_TAG, "ios")),
+        Arguments.of("Signal-Android/1.2.3 (Android 8.1)", Tag.of(UserAgentTagUtil.PLATFORM_TAG, "android")),
+        Arguments.of("Signal-Desktop/3.9.0", Tag.of(UserAgentTagUtil.PLATFORM_TAG, "desktop")),
+        Arguments.of("Signal-iOS/4.53.7 (iPhone; iOS 12.2; Scale/3.00)", Tag.of(UserAgentTagUtil.PLATFORM_TAG, "ios")),
+        Arguments.of("Signal-Android/4.68.3 (Android 9)", Tag.of(UserAgentTagUtil.PLATFORM_TAG, "android")),
+        Arguments.of("Signal-Android/1.2.3 (Android 4.3)", Tag.of(UserAgentTagUtil.PLATFORM_TAG, "android")),
+        Arguments.of("Signal-Android/4.68.3.0-bobsbootlegclient", Tag.of(UserAgentTagUtil.PLATFORM_TAG, "android")),
+        Arguments.of("Signal-Desktop/1.22.45-foo-0", Tag.of(UserAgentTagUtil.PLATFORM_TAG, "desktop")),
+        Arguments.of("Signal-Desktop/1.34.5-beta.1-fakeclientemporium", Tag.of(UserAgentTagUtil.PLATFORM_TAG, "desktop")),
+        Arguments.of("Signal-Desktop/1.32.0-beta.3", Tag.of(UserAgentTagUtil.PLATFORM_TAG, "desktop"))
+    );
+  }
 
-    @Test
-    @Parameters(method = "argumentsForTestGetUserAgentTags")
-    public void testGetUserAgentTags(final String userAgent, final List<Tag> expectedTags) {
-        assertEquals(new HashSet<>(expectedTags),
-                     new HashSet<>(UserAgentTagUtil.getUserAgentTags(userAgent)));
-    }
+  @SuppressWarnings("OptionalUsedAsFieldOrParameterType")
+  @ParameterizedTest
+  @MethodSource
+  void getClientVersionTag(final String userAgent, final boolean isVersionLive, final Optional<Tag> expectedTag) {
+    final ClientReleaseManager clientReleaseManager = mock(ClientReleaseManager.class);
+    when(clientReleaseManager.isVersionActive(any(), any())).thenReturn(isVersionLive);
 
-    private static List<Tag> platformVersionTags(String platform, String version) {
-        return List.of(Tag.of(UserAgentTagUtil.PLATFORM_TAG, platform), Tag.of(UserAgentTagUtil.VERSION_TAG, version));
-    }
+    assertEquals(expectedTag, UserAgentTagUtil.getClientVersionTag(userAgent, clientReleaseManager));
+  }
 
-    @SuppressWarnings("unused")
-    private Object argumentsForTestGetUserAgentTags() {
-        return new Object[] {
-                new Object[] { "This is obviously not a reasonable User-Agent string.", UserAgentTagUtil.UNRECOGNIZED_TAGS },
-                new Object[] { null,                                                    UserAgentTagUtil.UNRECOGNIZED_TAGS },
-                new Object[] { "Signal-Android 4.53.7 (Android 8.1)",                   platformVersionTags("android", "4.53.7") },
-                new Object[] { "Signal Desktop 1.2.3",                                  platformVersionTags("desktop", "1.2.3") },
-                new Object[] { "Signal/3.9.0 (iPhone; iOS 12.2; Scale/3.00)",           platformVersionTags("ios", "3.9.0") },
-                new Object[] { "Signal-Android 1.2.3 (Android 8.1)",                    UserAgentTagUtil.UNRECOGNIZED_TAGS },
-                new Object[] { "Signal Desktop 3.9.0",                                  platformVersionTags("desktop", "3.9.0") },
-                new Object[] { "Signal/4.53.7 (iPhone; iOS 12.2; Scale/3.00)",          platformVersionTags("ios", "4.53.7") },
-                new Object[] { "Signal-Android 4.68.3 (Android 9)",                     platformVersionTags("android", "4.68.3") },
-                new Object[] { "Signal-Android 1.2.3 (Android 4.3)",                    UserAgentTagUtil.UNRECOGNIZED_TAGS },
-                new Object[] { "Signal-Android 4.68.3.0-bobsbootlegclient",             UserAgentTagUtil.UNRECOGNIZED_TAGS },
-                new Object[] { "Signal Desktop 1.22.45-foo-0",                          UserAgentTagUtil.UNRECOGNIZED_TAGS },
-                new Object[] { "Signal Desktop 1.34.5-beta.1-fakeclientemporium",       UserAgentTagUtil.UNRECOGNIZED_TAGS },
-                new Object[] { "Signal Desktop 1.32.0-beta.3",                          UserAgentTagUtil.UNRECOGNIZED_TAGS },
-        };
-    }
+  private static Stream<Arguments> getClientVersionTag() {
+    return Stream.of(
+        Arguments.of("Signal-Android/1.2.3 (Android 9)",
+            true,
+            Optional.of(Tag.of(UserAgentTagUtil.VERSION_TAG, "1.2.3"))),
 
-    @Test
-    public void testGetUserAgentTagsFlooded() {
-        for (int i = 0; i < UserAgentTagUtil.MAX_VERSIONS; i++) {
-            UserAgentTagUtil.getUserAgentTags(String.format("Signal-Android 4.0.%d (Android 8.1)", i));
-        }
-
-        assertEquals(UserAgentTagUtil.OVERFLOW_TAGS,
-                UserAgentTagUtil.getUserAgentTags("Signal-Android 4.1.0 (Android 8.1)"));
-
-        final List<Tag> tags = UserAgentTagUtil.getUserAgentTags("Signal-Android 4.0.0 (Android 8.1)");
-
-        assertEquals(2, tags.size());
-        assertTrue(tags.contains(Tag.of(UserAgentTagUtil.PLATFORM_TAG, "android")));
-        assertTrue(tags.contains(Tag.of(UserAgentTagUtil.VERSION_TAG, "4.0.0")));
-    }
-
-    @Test
-    @Parameters(method = "argumentsForTestGetPlatformTag")
-    public void testGetPlatformTag(final String userAgent, final Tag expectedTag) {
-        assertEquals(expectedTag, UserAgentTagUtil.getPlatformTag(userAgent));
-    }
-
-    private Object argumentsForTestGetPlatformTag() {
-        return new Object[] {
-                new Object[] { "This is obviously not a reasonable User-Agent string.", Tag.of(UserAgentTagUtil.PLATFORM_TAG, "unrecognized") },
-                new Object[] { null,                                                    Tag.of(UserAgentTagUtil.PLATFORM_TAG, "unrecognized") },
-                new Object[] { "Signal-Android 4.53.7 (Android 8.1)",                   Tag.of(UserAgentTagUtil.PLATFORM_TAG, "android") },
-                new Object[] { "Signal Desktop 1.2.3",                                  Tag.of(UserAgentTagUtil.PLATFORM_TAG, "desktop") },
-                new Object[] { "Signal/3.9.0 (iPhone; iOS 12.2; Scale/3.00)",           Tag.of(UserAgentTagUtil.PLATFORM_TAG, "ios") },
-                new Object[] { "Signal-Android 1.2.3 (Android 8.1)",                    Tag.of(UserAgentTagUtil.PLATFORM_TAG, "android") },
-                new Object[] { "Signal Desktop 3.9.0",                                  Tag.of(UserAgentTagUtil.PLATFORM_TAG, "desktop") },
-                new Object[] { "Signal/4.53.7 (iPhone; iOS 12.2; Scale/3.00)",          Tag.of(UserAgentTagUtil.PLATFORM_TAG, "ios") },
-                new Object[] { "Signal-Android 4.68.3 (Android 9)",                     Tag.of(UserAgentTagUtil.PLATFORM_TAG, "android") },
-                new Object[] { "Signal-Android 1.2.3 (Android 4.3)",                    Tag.of(UserAgentTagUtil.PLATFORM_TAG, "android") },
-                new Object[] { "Signal-Android 4.68.3.0-bobsbootlegclient",             Tag.of(UserAgentTagUtil.PLATFORM_TAG, "android") },
-                new Object[] { "Signal Desktop 1.22.45-foo-0",                          Tag.of(UserAgentTagUtil.PLATFORM_TAG, "desktop") },
-                new Object[] { "Signal Desktop 1.34.5-beta.1-fakeclientemporium",       Tag.of(UserAgentTagUtil.PLATFORM_TAG, "desktop") },
-                new Object[] { "Signal Desktop 1.32.0-beta.3",                          Tag.of(UserAgentTagUtil.PLATFORM_TAG, "desktop") },
-        };
-    }
+        Arguments.of("Signal-Android/1.2.3 (Android 9)",
+            false,
+            Optional.empty())
+    );
+  }
 }

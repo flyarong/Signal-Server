@@ -7,23 +7,18 @@ package org.whispersystems.textsecuregcm.workers;
 
 import com.google.common.base.MoreObjects;
 import com.google.protobuf.ByteString;
+import io.dropwizard.core.cli.Command;
+import io.dropwizard.core.setup.Bootstrap;
+import java.security.InvalidKeyException;
+import java.util.Base64;
+import java.util.Set;
 import net.sourceforge.argparse4j.impl.Arguments;
 import net.sourceforge.argparse4j.inf.Namespace;
 import net.sourceforge.argparse4j.inf.Subparser;
-import org.whispersystems.curve25519.Curve25519;
-import org.whispersystems.curve25519.Curve25519KeyPair;
-import org.whispersystems.textsecuregcm.crypto.Curve;
-import org.whispersystems.textsecuregcm.crypto.ECKeyPair;
-import org.whispersystems.textsecuregcm.crypto.ECPrivateKey;
+import org.signal.libsignal.protocol.ecc.Curve;
+import org.signal.libsignal.protocol.ecc.ECKeyPair;
+import org.signal.libsignal.protocol.ecc.ECPrivateKey;
 import org.whispersystems.textsecuregcm.entities.MessageProtos;
-import org.whispersystems.textsecuregcm.util.Base64;
-
-import java.io.IOException;
-import java.security.InvalidKeyException;
-import java.util.Set;
-
-import io.dropwizard.cli.Command;
-import io.dropwizard.setup.Bootstrap;
 
 public class CertificateCommand extends Command {
 
@@ -62,11 +57,11 @@ public class CertificateCommand extends Command {
 
   private void runCaCommand() {
     ECKeyPair keyPair = Curve.generateKeyPair();
-    System.out.println("Public key : " + Base64.encodeBytes(keyPair.getPublicKey().serialize()));
-    System.out.println("Private key: " + Base64.encodeBytes(keyPair.getPrivateKey().serialize()));
+    System.out.println("Public key : " + Base64.getEncoder().encodeToString(keyPair.getPublicKey().serialize()));
+    System.out.println("Private key: " + Base64.getEncoder().encodeToString(keyPair.getPrivateKey().serialize()));
   }
 
-  private void runCertificateCommand(Namespace namespace) throws IOException, InvalidKeyException {
+  private void runCertificateCommand(Namespace namespace) throws InvalidKeyException, org.signal.libsignal.protocol.InvalidKeyException {
     if (namespace.getString("key") == null) {
       System.out.println("No key specified!");
       return;
@@ -77,7 +72,7 @@ public class CertificateCommand extends Command {
       return;
     }
 
-    ECPrivateKey key   = Curve.decodePrivatePoint(Base64.decode(namespace.getString("key")));
+    ECPrivateKey key   = Curve.decodePrivatePoint(Base64.getDecoder().decode(namespace.getString("key")));
     int          keyId = namespace.getInt("keyId");
 
     if (RESERVED_CERTIFICATE_IDS.contains(keyId)) {
@@ -93,7 +88,12 @@ public class CertificateCommand extends Command {
                                                                     .build()
                                                                     .toByteArray();
 
-    byte[] signature = Curve.calculateSignature(key, certificate);
+    byte[] signature;
+    try {
+      signature = Curve.calculateSignature(key, certificate);
+    } catch (org.signal.libsignal.protocol.InvalidKeyException e) {
+      throw new InvalidKeyException(e);
+    }
 
     byte[] signedCertificate = MessageProtos.ServerCertificate.newBuilder()
                                                               .setCertificate(ByteString.copyFrom(certificate))
@@ -101,7 +101,7 @@ public class CertificateCommand extends Command {
                                                               .build()
                                                               .toByteArray();
 
-    System.out.println("Certificate: " + Base64.encodeBytes(signedCertificate));
-    System.out.println("Private key: " + Base64.encodeBytes(keyPair.getPrivateKey().serialize()));
+    System.out.println("Certificate: " + Base64.getEncoder().encodeToString(signedCertificate));
+    System.out.println("Private key: " + Base64.getEncoder().encodeToString(keyPair.getPrivateKey().serialize()));
   }
 }

@@ -5,102 +5,98 @@
 
 package org.whispersystems.textsecuregcm.redis;
 
-import com.codahale.metrics.Meter;
-import com.codahale.metrics.MetricRegistry;
-import com.codahale.metrics.SharedMetricRegistries;
-import com.codahale.metrics.Timer;
+import static org.whispersystems.textsecuregcm.metrics.MetricsUtil.name;
+
 import io.github.resilience4j.circuitbreaker.CircuitBreaker;
 import io.github.resilience4j.retry.Retry;
-import io.lettuce.core.RedisCommandTimeoutException;
+import io.lettuce.core.RedisException;
+import io.lettuce.core.cluster.event.ClusterTopologyChangedEvent;
 import io.lettuce.core.cluster.pubsub.StatefulRedisClusterPubSubConnection;
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
-import org.whispersystems.textsecuregcm.util.Constants;
-import org.whispersystems.textsecuregcm.util.ThreadDumpUtil;
-
-import java.util.concurrent.atomic.AtomicBoolean;
+import io.micrometer.core.instrument.Metrics;
+import io.micrometer.core.instrument.Timer;
 import java.util.function.Consumer;
 import java.util.function.Function;
-
-import static com.codahale.metrics.MetricRegistry.name;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+import org.whispersystems.textsecuregcm.util.CircuitBreakerUtil;
+import reactor.core.scheduler.Scheduler;
 
 public class FaultTolerantPubSubConnection<K, V> {
 
-    private final String name;
+  private static final Logger logger = LoggerFactory.getLogger(FaultTolerantPubSubConnection.class);
 
-    private final StatefulRedisClusterPubSubConnection<K, V> pubSubConnection;
 
-    private final CircuitBreaker circuitBreaker;
-    private final Retry          retry;
+  private final String name;
+  private final StatefulRedisClusterPubSubConnection<K, V> pubSubConnection;
 
-    private final Timer         executeTimer;
-    private final Meter         commandTimeoutMeter;
-    private final AtomicBoolean wroteThreadDump = new AtomicBoolean(false);
+  private final CircuitBreaker circuitBreaker;
+  private final Retry retry;
+  private final Retry resubscribeRetry;
+  private final Scheduler topologyChangedEventScheduler;
 
-    private static final Logger log = LoggerFactory.getLogger(FaultTolerantPubSubConnection.class);
+  private final Timer executeTimer;
 
-    public FaultTolerantPubSubConnection(final String name, final StatefulRedisClusterPubSubConnection<K, V> pubSubConnection, final CircuitBreaker circuitBreaker, final Retry retry) {
-        this.name             = name;
-        this.pubSubConnection = pubSubConnection;
-        this.circuitBreaker   = circuitBreaker;
-        this.retry            = retry;
+  public FaultTolerantPubSubConnection(final String name,
+      final StatefulRedisClusterPubSubConnection<K, V> pubSubConnection, final CircuitBreaker circuitBreaker,
+      final Retry retry, final Retry resubscribeRetry, final Scheduler topologyChangedEventScheduler) {
+    this.name = name;
+    this.pubSubConnection = pubSubConnection;
+    this.circuitBreaker = circuitBreaker;
+    this.retry = retry;
+    this.resubscribeRetry = resubscribeRetry;
+    this.topologyChangedEventScheduler = topologyChangedEventScheduler;
 
-        this.pubSubConnection.setNodeMessagePropagation(true);
+    this.pubSubConnection.setNodeMessagePropagation(true);
 
-        final MetricRegistry metricRegistry = SharedMetricRegistries.getOrCreate(Constants.METRICS_NAME);
+    this.executeTimer = Metrics.timer(name(getClass(), "execute"), "clusterName", name + "-pubsub");
 
-        this.executeTimer = metricRegistry.timer(name(getClass(), name + "-pubsub", "execute"));
-        this.commandTimeoutMeter = metricRegistry.meter(name(getClass(), name + "-pubsub", "commandTimeout"));
+    CircuitBreakerUtil.registerMetrics(circuitBreaker, FaultTolerantPubSubConnection.class);
+  }
+
+  public void usePubSubConnection(final Consumer<StatefulRedisClusterPubSubConnection<K, V>> consumer) {
+    try {
+      circuitBreaker.executeCheckedRunnable(
+          () -> retry.executeRunnable(() -> executeTimer.record(() -> consumer.accept(pubSubConnection))));
+    } catch (final Throwable t) {
+      if (t instanceof RedisException) {
+        throw (RedisException) t;
+      } else {
+        throw new RedisException(t);
+      }
     }
-
-    public void usePubSubConnection(final Consumer<StatefulRedisClusterPubSubConnection<K, V>> consumer) {
-        try {
-            circuitBreaker.executeCheckedRunnable(() -> retry.executeRunnable(() -> {
-                try (final Timer.Context ignored = executeTimer.time()) {
-                    consumer.accept(pubSubConnection);
-                } catch (final RedisCommandTimeoutException e) {
-                    recordCommandTimeout(e);
-                    throw e;
-                }
-            }));
-        } catch (final Throwable t) {
-            log.warn("Redis operation failure", t);
-
-            if (t instanceof RuntimeException) {
-                throw (RuntimeException) t;
-            } else {
-                throw new RuntimeException(t);
-            }
-        }
-    }
+  }
 
     public <T> T withPubSubConnection(final Function<StatefulRedisClusterPubSubConnection<K, V>, T> function) {
         try {
-            return circuitBreaker.executeCheckedSupplier(() -> retry.executeCallable(() -> {
-                try (final Timer.Context ignored = executeTimer.time()) {
-                    return function.apply(pubSubConnection);
-                } catch (final RedisCommandTimeoutException e) {
-                    recordCommandTimeout(e);
-                    throw e;
-                }
-            }));
+          return circuitBreaker.executeCheckedSupplier(
+              () -> retry.executeCallable(() -> executeTimer.record(() -> function.apply(pubSubConnection))));
         } catch (final Throwable t) {
-            log.warn("Redis operation failure", t);
+          if (t instanceof RedisException) {
+            throw (RedisException) t;
+          } else {
+            throw new RedisException(t);
+          }
+        }
+    }
 
-            if (t instanceof RuntimeException) {
-                throw (RuntimeException) t;
-            } else {
-                throw new RuntimeException(t);
+
+  public void subscribeToClusterTopologyChangedEvents(final Runnable eventHandler) {
+
+    usePubSubConnection(connection -> connection.getResources().eventBus().get()
+        .filter(event -> event instanceof ClusterTopologyChangedEvent)
+        .subscribeOn(topologyChangedEventScheduler)
+        .subscribe(event -> {
+          logger.info("Got topology change event for {}, resubscribing all keyspace notifications", name);
+
+          resubscribeRetry.executeRunnable(() -> {
+            try {
+              eventHandler.run();
+            } catch (final RuntimeException e) {
+              logger.warn("Resubscribe for {} failed", name, e);
+              throw e;
             }
-        }
-    }
+          });
+        }));
+  }
 
-    private void recordCommandTimeout(final RedisCommandTimeoutException e) {
-        commandTimeoutMeter.mark();
-        log.warn("[{}] Command timeout exception ({}-pubsub)", Thread.currentThread().getName(), this.name, e);
-
-        if (wroteThreadDump.compareAndSet(false, true)) {
-            ThreadDumpUtil.writeThreadDump();
-        }
-    }
 }

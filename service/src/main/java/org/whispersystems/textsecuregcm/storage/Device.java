@@ -1,27 +1,43 @@
 /*
- * Copyright 2013-2020 Signal Messenger, LLC
+ * Copyright 2013 Signal Messenger, LLC
  * SPDX-License-Identifier: AGPL-3.0-only
  */
 package org.whispersystems.textsecuregcm.storage;
 
 
 import com.fasterxml.jackson.annotation.JsonProperty;
-import org.whispersystems.textsecuregcm.auth.AuthenticationCredentials;
-import org.whispersystems.textsecuregcm.entities.SignedPreKey;
-import org.whispersystems.textsecuregcm.util.Util;
-
+import com.fasterxml.jackson.databind.annotation.JsonDeserialize;
+import com.fasterxml.jackson.databind.annotation.JsonSerialize;
+import java.time.Duration;
+import java.util.List;
+import java.util.OptionalInt;
+import java.util.UUID;
+import java.util.stream.Collectors;
+import java.util.stream.IntStream;
 import javax.annotation.Nullable;
-import java.util.concurrent.TimeUnit;
+import org.apache.commons.lang3.StringUtils;
+import org.whispersystems.textsecuregcm.auth.SaltedTokenHash;
+import org.whispersystems.textsecuregcm.util.DeviceNameByteArrayAdapter;
 
 public class Device {
 
-  public static final long MASTER_ID = 1;
+  public static final byte PRIMARY_ID = 1;
+  public static final byte MAXIMUM_DEVICE_ID = Byte.MAX_VALUE;
+  public static final int MAX_REGISTRATION_ID = 0x3FFF;
+  public static final List<Byte> ALL_POSSIBLE_DEVICE_IDS = IntStream.range(Device.PRIMARY_ID, MAXIMUM_DEVICE_ID).boxed()
+      .map(Integer::byteValue).collect(Collectors.toList());
+
+  private static final long ALLOWED_LINKED_IDLE_MILLIS = Duration.ofDays(30).toMillis();
+  private static final long ALLOWED_PRIMARY_IDLE_MILLIS = Duration.ofDays(180).toMillis();
+
+  @JsonDeserialize(using = DeviceIdDeserializer.class)
+  @JsonProperty
+  private byte id;
 
   @JsonProperty
-  private long    id;
-
-  @JsonProperty
-  private String  name;
+  @JsonSerialize(using = DeviceNameByteArrayAdapter.Serializer.class)
+  @JsonDeserialize(using = DeviceNameByteArrayAdapter.Deserializer.class)
+  private byte[] name;
 
   @JsonProperty
   private String  authToken;
@@ -50,8 +66,9 @@ public class Device {
   @JsonProperty
   private int registrationId;
 
-  @JsonProperty
-  private SignedPreKey signedPreKey;
+  @Nullable
+  @JsonProperty("pniRegistrationId")
+  private Integer phoneNumberIdentityRegistrationId;
 
   @JsonProperty
   private long lastSeen;
@@ -64,32 +81,6 @@ public class Device {
 
   @JsonProperty
   private DeviceCapabilities capabilities;
-
-  public Device() {}
-
-  public Device(long id, String name, String authToken, String salt,
-                String gcmId, String apnId,
-                String voipApnId, boolean fetchesMessages,
-                int registrationId, SignedPreKey signedPreKey,
-                long lastSeen, long created, String userAgent,
-                long uninstalledFeedback, DeviceCapabilities capabilities)
-  {
-    this.id                      = id;
-    this.name                    = name;
-    this.authToken               = authToken;
-    this.salt                    = salt;
-    this.gcmId                   = gcmId;
-    this.apnId                   = apnId;
-    this.voipApnId               = voipApnId;
-    this.fetchesMessages         = fetchesMessages;
-    this.registrationId          = registrationId;
-    this.signedPreKey            = signedPreKey;
-    this.lastSeen                = lastSeen;
-    this.created                 = created;
-    this.userAgent               = userAgent;
-    this.uninstalledFeedback     = uninstalledFeedback;
-    this.capabilities            = capabilities;
-  }
 
   public String getApnId() {
     return apnId;
@@ -147,32 +138,60 @@ public class Device {
     }
   }
 
-  public long getId() {
+  public byte getId() {
     return id;
   }
 
-  public void setId(long id) {
+  public void setId(byte id) {
     this.id = id;
   }
 
-  public String getName() {
+  public byte[] getName() {
     return name;
   }
 
-  public void setName(String name) {
+  public void setName(byte[] name) {
     this.name = name;
   }
 
-  public void setAuthenticationCredentials(AuthenticationCredentials credentials) {
-    this.authToken = credentials.getHashedAuthenticationToken();
-    this.salt      = credentials.getSalt();
+  public void setAuthTokenHash(SaltedTokenHash credentials) {
+    this.authToken = credentials.hash();
+    this.salt      = credentials.salt();
   }
 
-  public AuthenticationCredentials getAuthenticationCredentials() {
-    return new AuthenticationCredentials(authToken, salt);
+  /**
+   * Has this device been manually locked?
+   *
+   * We lock a device by prepending "!" to its token.
+   * This character cannot normally appear in valid tokens.
+   *
+   * @return true if the credential was locked, false otherwise.
+   */
+  public boolean hasLockedCredentials() {
+    SaltedTokenHash auth = getAuthTokenHash();
+    return auth.hash().startsWith("!");
   }
 
-  public @Nullable DeviceCapabilities getCapabilities() {
+  /**
+   * Lock device by invalidating authentication tokens.
+   *
+   * This should only be used from Account::lockAuthenticationCredentials.
+   *
+   * See that method for more information.
+   */
+  public void lockAuthTokenHash() {
+    SaltedTokenHash oldAuth = getAuthTokenHash();
+    String token = "!" + oldAuth.hash();
+    String salt = oldAuth.salt();
+    setAuthTokenHash(new SaltedTokenHash(token, salt));
+  }
+
+  public SaltedTokenHash getAuthTokenHash() {
+    return new SaltedTokenHash(authToken, salt);
+  }
+
+  @Nullable
+  public DeviceCapabilities getCapabilities() {
     return capabilities;
   }
 
@@ -181,12 +200,17 @@ public class Device {
   }
 
   public boolean isEnabled() {
-    boolean hasChannel = fetchesMessages || !Util.isEmpty(getApnId()) || !Util.isEmpty(getGcmId());
+    boolean hasChannel = fetchesMessages || StringUtils.isNotEmpty(getApnId()) || StringUtils.isNotEmpty(getGcmId());
 
-    return (id == MASTER_ID && hasChannel && signedPreKey != null) ||
-           (id != MASTER_ID && hasChannel && signedPreKey != null && lastSeen > (System.currentTimeMillis() - TimeUnit.DAYS.toMillis(30)));
+    return (id == PRIMARY_ID && hasChannel) || (id != PRIMARY_ID && hasChannel && !isExpired());
   }
-  
+
+  public boolean isExpired() {
+    return isPrimary()
+        ? lastSeen < (System.currentTimeMillis() - ALLOWED_PRIMARY_IDLE_MILLIS)
+        : lastSeen < (System.currentTimeMillis() - ALLOWED_LINKED_IDLE_MILLIS);
+  }
+
   public boolean getFetchesMessages() {
     return fetchesMessages;
   }
@@ -195,8 +219,8 @@ public class Device {
     this.fetchesMessages = fetchesMessages;
   }
 
-  public boolean isMaster() {
-    return getId() == MASTER_ID;
+  public boolean isPrimary() {
+    return getId() == PRIMARY_ID;
   }
 
   public int getRegistrationId() {
@@ -207,12 +231,12 @@ public class Device {
     this.registrationId = registrationId;
   }
 
-  public SignedPreKey getSignedPreKey() {
-    return signedPreKey;
+  public OptionalInt getPhoneNumberIdentityRegistrationId() {
+    return phoneNumberIdentityRegistrationId != null ? OptionalInt.of(phoneNumberIdentityRegistrationId) : OptionalInt.empty();
   }
 
-  public void setSignedPreKey(SignedPreKey signedPreKey) {
-    this.signedPreKey = signedPreKey;
+  public void setPhoneNumberIdentityRegistrationId(final int phoneNumberIdentityRegistrationId) {
+    this.phoneNumberIdentityRegistrationId = phoneNumberIdentityRegistrationId;
   }
 
   public long getPushTimestamp() {
@@ -227,85 +251,6 @@ public class Device {
     return this.userAgent;
   }
 
-  public boolean isGroupsV2Supported() {
-    final boolean groupsV2Supported;
-
-    if (this.capabilities != null) {
-      final boolean ios = this.apnId != null || this.voipApnId != null;
-
-      groupsV2Supported = this.capabilities.isGv2_3() || (ios && this.capabilities.isGv2_2());
-    } else {
-      groupsV2Supported = false;
-    }
-
-    return groupsV2Supported;
-  }
-
-  @Override
-  public boolean equals(Object other) {
-    if (other == null || !(other instanceof Device)) return false;
-
-    Device that = (Device)other;
-    return this.id == that.id;
-  }
-
-  @Override
-  public int hashCode() {
-    return (int)this.id;
-  }
-
-  public static class DeviceCapabilities {
-    @JsonProperty
-    private boolean gv2;
-
-    @JsonProperty("gv2-2")
-    private boolean gv2_2;
-
-    @JsonProperty("gv2-3")
-    private boolean gv2_3;
-
-    @JsonProperty
-    private boolean storage;
-
-    @JsonProperty
-    private boolean transfer;
-
-    @JsonProperty("gv1-migration")
-    private boolean gv1Migration;
-
-    public DeviceCapabilities() {}
-
-    public DeviceCapabilities(boolean gv2, final boolean gv2_2, final boolean gv2_3, boolean storage, boolean transfer, boolean gv1Migration) {
-      this.gv2 = gv2;
-      this.gv2_2 = gv2_2;
-      this.gv2_3 = gv2_3;
-      this.storage = storage;
-      this.transfer = transfer;
-      this.gv1Migration = gv1Migration;
-    }
-
-    public boolean isGv2() {
-      return gv2;
-    }
-
-    public boolean isGv2_2() {
-      return gv2_2;
-    }
-
-    public boolean isGv2_3() {
-      return gv2_3;
-    }
-
-    public boolean isStorage() {
-      return storage;
-    }
-
-    public boolean isTransfer() {
-      return transfer;
-    }
-
-    public boolean isGv1Migration() {
-      return gv1Migration;
-    }
+  public record DeviceCapabilities(boolean storage, boolean transfer, boolean paymentActivation) {
   }
 }

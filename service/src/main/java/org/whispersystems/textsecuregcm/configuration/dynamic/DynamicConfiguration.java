@@ -1,12 +1,17 @@
+/*
+ * Copyright 2023 Signal Messenger, LLC
+ * SPDX-License-Identifier: AGPL-3.0-only
+ */
+
 package org.whispersystems.textsecuregcm.configuration.dynamic;
 
 import com.fasterxml.jackson.annotation.JsonProperty;
-import com.google.common.annotations.VisibleForTesting;
 import java.util.Collections;
+import java.util.HashMap;
 import java.util.Map;
 import java.util.Optional;
-import java.util.Set;
 import javax.validation.Valid;
+import org.whispersystems.textsecuregcm.limits.RateLimiterConfig;
 
 public class DynamicConfiguration {
 
@@ -20,7 +25,7 @@ public class DynamicConfiguration {
 
   @JsonProperty
   @Valid
-  private DynamicRateLimitsConfiguration limits = new DynamicRateLimitsConfiguration();
+  private Map<String, RateLimiterConfig> limits = new HashMap<>();
 
   @JsonProperty
   @Valid
@@ -28,21 +33,39 @@ public class DynamicConfiguration {
 
   @JsonProperty
   @Valid
-  private DynamicMessageRateConfiguration messageRate = new DynamicMessageRateConfiguration();
-
-  @JsonProperty
-  @Valid
   private DynamicPaymentsConfiguration payments = new DynamicPaymentsConfiguration();
 
   @JsonProperty
-  private Set<String> featureFlags = Collections.emptySet();
+  @Valid
+  private DynamicCaptchaConfiguration captcha = new DynamicCaptchaConfiguration();
 
   @JsonProperty
   @Valid
-  private DynamicTwilioConfiguration twilio = new DynamicTwilioConfiguration();
+  private DynamicTurnConfiguration turn = new DynamicTurnConfiguration();
 
   @JsonProperty
-  private DynamicSignupCaptchaConfiguration signupCaptcha = new DynamicSignupCaptchaConfiguration();
+  @Valid
+  DynamicMessagePersisterConfiguration messagePersister = new DynamicMessagePersisterConfiguration();
+
+  @JsonProperty
+  @Valid
+  DynamicRateLimitPolicy rateLimitPolicy = new DynamicRateLimitPolicy(false);
+
+  @JsonProperty
+  @Valid
+  DynamicInboundMessageByteLimitConfiguration inboundMessageByteLimit = new DynamicInboundMessageByteLimitConfiguration(true);
+
+  @JsonProperty
+  @Valid
+  DynamicRegistrationConfiguration registrationConfiguration = new DynamicRegistrationConfiguration(false);
+
+  @JsonProperty
+  @Valid
+  DynamicVirtualThreadConfiguration virtualThreads = new DynamicVirtualThreadConfiguration(Collections.emptySet());
+
+  @JsonProperty
+  @Valid
+  DynamicMetricsConfiguration metricsConfiguration = new DynamicMetricsConfiguration(false);
 
   public Optional<DynamicExperimentEnrollmentConfiguration> getExperimentEnrollmentConfiguration(
       final String experimentName) {
@@ -54,7 +77,7 @@ public class DynamicConfiguration {
     return Optional.ofNullable(preRegistrationExperiments.get(experimentName));
   }
 
-  public DynamicRateLimitsConfiguration getLimits() {
+  public Map<String, RateLimiterConfig> getLimits() {
     return limits;
   }
 
@@ -62,28 +85,40 @@ public class DynamicConfiguration {
     return remoteDeprecation;
   }
 
-  public DynamicMessageRateConfiguration getMessageRateConfiguration() {
-    return messageRate;
-  }
-
   public DynamicPaymentsConfiguration getPaymentsConfiguration() {
     return payments;
   }
 
-  public Set<String> getActiveFeatureFlags() {
-    return featureFlags;
+  public DynamicCaptchaConfiguration getCaptchaConfiguration() {
+    return captcha;
   }
 
-  public DynamicTwilioConfiguration getTwilioConfiguration() {
-    return twilio;
+  public DynamicTurnConfiguration getTurnConfiguration() {
+    return turn;
   }
 
-  @VisibleForTesting
-  public void setTwilioConfiguration(DynamicTwilioConfiguration twilioConfiguration) {
-    this.twilio = twilioConfiguration;
+  public DynamicMessagePersisterConfiguration getMessagePersisterConfiguration() {
+    return messagePersister;
   }
 
-  public DynamicSignupCaptchaConfiguration getSignupCaptchaConfiguration() {
-    return signupCaptcha;
+  public DynamicRateLimitPolicy getRateLimitPolicy() {
+    return rateLimitPolicy;
   }
+
+  public DynamicInboundMessageByteLimitConfiguration getInboundMessageByteLimitConfiguration() {
+    return inboundMessageByteLimit;
+  }
+
+  public DynamicRegistrationConfiguration getRegistrationConfiguration() {
+    return registrationConfiguration;
+  }
+
+  public DynamicVirtualThreadConfiguration getVirtualThreads() {
+    return virtualThreads;
+  }
+
+  public DynamicMetricsConfiguration getMetricsConfiguration() {
+    return metricsConfiguration;
+  }
+
 }

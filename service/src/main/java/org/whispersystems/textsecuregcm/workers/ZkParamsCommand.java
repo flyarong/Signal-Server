@@ -5,14 +5,13 @@
 
 package org.whispersystems.textsecuregcm.workers;
 
+import io.dropwizard.core.cli.Command;
+import io.dropwizard.core.setup.Bootstrap;
+import java.util.Base64;
 import net.sourceforge.argparse4j.inf.Namespace;
 import net.sourceforge.argparse4j.inf.Subparser;
-import org.signal.zkgroup.ServerPublicParams;
-import org.signal.zkgroup.ServerSecretParams;
-import org.whispersystems.textsecuregcm.util.Base64;
-
-import io.dropwizard.cli.Command;
-import io.dropwizard.setup.Bootstrap;
+import org.signal.libsignal.zkgroup.ServerPublicParams;
+import org.signal.libsignal.zkgroup.ServerSecretParams;
 
 public class ZkParamsCommand extends Command {
 
@@ -30,8 +29,8 @@ public class ZkParamsCommand extends Command {
     ServerSecretParams serverSecretParams = ServerSecretParams.generate();
     ServerPublicParams serverPublicParams = serverSecretParams.getPublicParams();
 
-    System.out.println("Public: " + Base64.encodeBytesWithoutPadding(serverPublicParams.serialize()));
-    System.out.println("Private: " + Base64.encodeBytesWithoutPadding(serverSecretParams.serialize()));
+    System.out.println("Public: " + Base64.getEncoder().withoutPadding().encodeToString(serverPublicParams.serialize()));
+    System.out.println("Private: " + Base64.getEncoder().withoutPadding().encodeToString(serverSecretParams.serialize()));
   }
 
 }

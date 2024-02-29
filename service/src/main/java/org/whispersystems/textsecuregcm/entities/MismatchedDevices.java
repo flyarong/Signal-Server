@@ -6,24 +6,15 @@
 package org.whispersystems.textsecuregcm.entities;
 
 import com.fasterxml.jackson.annotation.JsonProperty;
-import com.google.common.annotations.VisibleForTesting;
+import io.swagger.v3.oas.annotations.media.Schema;
 
 import java.util.List;
 
-public class MismatchedDevices {
+public record MismatchedDevices(@JsonProperty
+                                @Schema(description = "Devices present on the account but absent in the request")
+                                List<Byte> missingDevices,
 
-  @JsonProperty
-  public List<Long> missingDevices;
-
-  @JsonProperty
-  public List<Long> extraDevices;
-
-  @VisibleForTesting
-  public MismatchedDevices() {}
-
-  public MismatchedDevices(List<Long> missingDevices, List<Long> extraDevices) {
-    this.missingDevices = missingDevices;
-    this.extraDevices   = extraDevices;
-  }
-
+                                @JsonProperty
+                                @Schema(description = "Devices absent on the request but present in the account")
+                                List<Byte> extraDevices) {
 }

@@ -6,7 +6,6 @@
 package org.whispersystems.textsecuregcm.metrics;
 
 import com.codahale.metrics.CachedGauge;
-import com.codahale.metrics.Gauge;
 import com.sun.management.OperatingSystemMXBean;
 
 import java.lang.management.ManagementFactory;
@@ -25,6 +24,6 @@ public class CpuUsageGauge extends CachedGauge<Integer> {
 
   @Override
   protected Integer loadValue() {
-    return (int) Math.ceil(operatingSystemMXBean.getSystemCpuLoad() * 100);
+    return (int) Math.ceil(operatingSystemMXBean.getCpuLoad() * 100);
   }
 }

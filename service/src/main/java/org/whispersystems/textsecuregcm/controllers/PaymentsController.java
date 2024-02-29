@@ -1,48 +1,56 @@
 /*
- * Copyright 2013-2020 Signal Messenger, LLC
+ * Copyright 2013 Signal Messenger, LLC
  * SPDX-License-Identifier: AGPL-3.0-only
  */
 
 package org.whispersystems.textsecuregcm.controllers;
 
-import com.codahale.metrics.annotation.Timed;
-import org.whispersystems.textsecuregcm.auth.ExternalServiceCredentialGenerator;
-import org.whispersystems.textsecuregcm.auth.ExternalServiceCredentials;
-import org.whispersystems.textsecuregcm.entities.CurrencyConversionEntityList;
-import org.whispersystems.textsecuregcm.storage.Account;
-import org.whispersystems.textsecuregcm.currency.CurrencyConversionManager;
-
+import io.dropwizard.auth.Auth;
+import io.swagger.v3.oas.annotations.tags.Tag;
 import javax.ws.rs.GET;
 import javax.ws.rs.Path;
 import javax.ws.rs.Produces;
 import javax.ws.rs.core.MediaType;
-
-import io.dropwizard.auth.Auth;
+import org.whispersystems.textsecuregcm.auth.AuthenticatedAccount;
+import org.whispersystems.textsecuregcm.auth.ExternalServiceCredentials;
+import org.whispersystems.textsecuregcm.auth.ExternalServiceCredentialsGenerator;
+import org.whispersystems.textsecuregcm.configuration.PaymentsServiceConfiguration;
+import org.whispersystems.textsecuregcm.currency.CurrencyConversionManager;
+import org.whispersystems.textsecuregcm.entities.CurrencyConversionEntityList;
+import org.whispersystems.websocket.auth.ReadOnly;
 
 @Path("/v1/payments")
+@Tag(name = "Payments")
 public class PaymentsController {
 
-  private final ExternalServiceCredentialGenerator paymentsServiceCredentialGenerator;
-  private final CurrencyConversionManager          currencyManager;
+  private final ExternalServiceCredentialsGenerator paymentsServiceCredentialsGenerator;
+  private final CurrencyConversionManager currencyManager;
 
-  public PaymentsController(CurrencyConversionManager currencyManager, ExternalServiceCredentialGenerator paymentsServiceCredentialGenerator) {
-    this.currencyManager                    = currencyManager;
-    this.paymentsServiceCredentialGenerator = paymentsServiceCredentialGenerator;
+
+  public static ExternalServiceCredentialsGenerator credentialsGenerator(final PaymentsServiceConfiguration cfg) {
+    return ExternalServiceCredentialsGenerator
+        .builder(cfg.userAuthenticationTokenSharedSecret())
+        .prependUsername(true)
+        .build();
   }
 
-  @Timed
+  public PaymentsController(final CurrencyConversionManager currencyManager,
+      final ExternalServiceCredentialsGenerator paymentsServiceCredentialsGenerator) {
+    this.currencyManager = currencyManager;
+    this.paymentsServiceCredentialsGenerator = paymentsServiceCredentialsGenerator;
+  }
+
   @GET
   @Path("/auth")
   @Produces(MediaType.APPLICATION_JSON)
-  public ExternalServiceCredentials getAuth(@Auth Account account) {
-    return paymentsServiceCredentialGenerator.generateFor(account.getUuid().toString());
+  public ExternalServiceCredentials getAuth(final @ReadOnly @Auth AuthenticatedAccount auth) {
+    return paymentsServiceCredentialsGenerator.generateForUuid(auth.getAccount().getUuid());
   }
 
-  @Timed
   @GET
   @Path("/conversions")
   @Produces(MediaType.APPLICATION_JSON)
-  public CurrencyConversionEntityList getConversions(@Auth Account account) {
+  public CurrencyConversionEntityList getConversions(final @ReadOnly @Auth AuthenticatedAccount auth) {
     return currencyManager.getCurrencyConversions().orElseThrow();
   }
 }

@@ -5,15 +5,19 @@
 
 package org.whispersystems.textsecuregcm.websocket;
 
-import org.whispersystems.textsecuregcm.util.Base64;
-
-import java.security.NoSuchAlgorithmException;
 import java.security.SecureRandom;
+import java.util.Base64;
 
 public class ProvisioningAddress extends WebsocketAddress {
 
-  public ProvisioningAddress(String address, int id) throws InvalidWebsocketAddressException {
-    super(address, id);
+  public static byte DEVICE_ID = 0;
+
+  public static ProvisioningAddress create(String address) {
+    return new ProvisioningAddress(address, DEVICE_ID);
+  }
+
+  private ProvisioningAddress(String address, byte deviceId) {
+    super(address, deviceId);
   }
 
   public ProvisioningAddress(String serialized) throws InvalidWebsocketAddressException {
@@ -25,14 +29,9 @@ public class ProvisioningAddress extends WebsocketAddress {
   }
 
   public static ProvisioningAddress generate() {
-    try {
-      byte[] random = new byte[16];
-      new SecureRandom().nextBytes(random);
+    byte[] random = new byte[16];
+    new SecureRandom().nextBytes(random);
 
-      return new ProvisioningAddress(Base64.encodeBytesWithoutPadding(random)
-                                           .replace('+', '-').replace('/', '_'), 0);
-    } catch (InvalidWebsocketAddressException e) {
-      throw new AssertionError(e);
-    }
+    return create(Base64.getUrlEncoder().withoutPadding().encodeToString(random));
   }
 }

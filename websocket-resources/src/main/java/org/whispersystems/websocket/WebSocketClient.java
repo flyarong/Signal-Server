@@ -4,16 +4,7 @@
  */
 package org.whispersystems.websocket;
 
-import org.eclipse.jetty.websocket.api.RemoteEndpoint;
-import org.eclipse.jetty.websocket.api.Session;
-import org.eclipse.jetty.websocket.api.WebSocketException;
-import org.eclipse.jetty.websocket.api.WriteCallback;
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
-import org.whispersystems.websocket.messages.WebSocketMessage;
-import org.whispersystems.websocket.messages.WebSocketMessageFactory;
-import org.whispersystems.websocket.messages.WebSocketResponseMessage;
-
+import com.google.common.net.HttpHeaders;
 import java.io.IOException;
 import java.nio.ByteBuffer;
 import java.security.SecureRandom;
@@ -21,6 +12,15 @@ import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 import java.util.concurrent.CompletableFuture;
+import org.eclipse.jetty.websocket.api.RemoteEndpoint;
+import org.eclipse.jetty.websocket.api.Session;
+import org.eclipse.jetty.websocket.api.exceptions.WebSocketException;
+import org.eclipse.jetty.websocket.api.WriteCallback;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+import org.whispersystems.websocket.messages.WebSocketMessage;
+import org.whispersystems.websocket.messages.WebSocketMessageFactory;
+import org.whispersystems.websocket.messages.WebSocketResponseMessage;
 
 @SuppressWarnings("OptionalUsedAsFieldOrParameterType")
 public class WebSocketClient {
@@ -35,13 +35,12 @@ public class WebSocketClient {
 
   public WebSocketClient(Session session, RemoteEndpoint remoteEndpoint,
                          WebSocketMessageFactory messageFactory,
-                         Map<Long, CompletableFuture<WebSocketResponseMessage>> pendingRequestMapper)
-  {
-    this.session              = session;
-    this.remoteEndpoint       = remoteEndpoint;
-    this.messageFactory       = messageFactory;
+                         Map<Long, CompletableFuture<WebSocketResponseMessage>> pendingRequestMapper) {
+    this.session = session;
+    this.remoteEndpoint = remoteEndpoint;
+    this.messageFactory = messageFactory;
     this.pendingRequestMapper = pendingRequestMapper;
-    this.created              = System.currentTimeMillis();
+    this.created = System.currentTimeMillis();
   }
 
   public CompletableFuture<WebSocketResponseMessage> sendRequest(String verb, String path,
@@ -77,21 +76,30 @@ public class WebSocketClient {
   }
 
   public String getUserAgent() {
-    return session.getUpgradeRequest().getHeader("User-Agent");
+    return session.getUpgradeRequest().getHeader(HttpHeaders.USER_AGENT);
   }
 
   public long getCreatedTimestamp() {
     return this.created;
   }
 
+  public boolean isOpen() {
+    return session.isOpen();
+  }
+
   public void close(int code, String message) {
     session.close(code, message);
+  }
+
+  public boolean shouldDeliverStories() {
+    String value = session.getUpgradeRequest().getHeader(Stories.X_SIGNAL_RECEIVE_STORIES);
+    return Stories.parseReceiveStoriesHeader(value);
   }
 
   public void hardDisconnectQuietly() {
     try {
       session.disconnect();
-    } catch (IOException e) {
+    } catch (Exception e) {
       // quietly we said
     }
   }

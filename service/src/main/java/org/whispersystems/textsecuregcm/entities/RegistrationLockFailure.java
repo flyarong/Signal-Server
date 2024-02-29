@@ -5,32 +5,14 @@
 
 package org.whispersystems.textsecuregcm.entities;
 
-import com.fasterxml.jackson.annotation.JsonIgnore;
-import com.fasterxml.jackson.annotation.JsonProperty;
+import io.swagger.v3.oas.annotations.media.Schema;
 import org.whispersystems.textsecuregcm.auth.ExternalServiceCredentials;
 
-public class RegistrationLockFailure {
+@Schema(description = "A token provided to the client via a push payload")
 
-  @JsonProperty
-  private long timeRemaining;
-
-  @JsonProperty
-  private ExternalServiceCredentials backupCredentials;
-
-  public RegistrationLockFailure() {}
-
-  public RegistrationLockFailure(long timeRemaining, ExternalServiceCredentials backupCredentials) {
-    this.timeRemaining     = timeRemaining;
-    this.backupCredentials = backupCredentials;
-  }
-
-  @JsonIgnore
-  public long getTimeRemaining() {
-    return timeRemaining;
-  }
-
-  @JsonIgnore
-  public ExternalServiceCredentials getBackupCredentials() {
-    return backupCredentials;
-  }
+public record RegistrationLockFailure(
+    @Schema(description = "Time remaining in milliseconds before the existing registration lock expires")
+    long timeRemaining,
+    @Schema(description = "Credentials that can be used with SVR2")
+    ExternalServiceCredentials svr2Credentials) {
 }

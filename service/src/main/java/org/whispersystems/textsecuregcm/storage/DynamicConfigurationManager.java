@@ -1,72 +1,91 @@
+/*
+ * Copyright 2023 Signal Messenger, LLC
+ * SPDX-License-Identifier: AGPL-3.0-only
+ */
+
 package org.whispersystems.textsecuregcm.storage;
 
-import com.amazonaws.ClientConfiguration;
-import com.amazonaws.auth.InstanceProfileCredentialsProvider;
-import com.amazonaws.services.appconfig.AmazonAppConfig;
-import com.amazonaws.services.appconfig.AmazonAppConfigClient;
-import com.amazonaws.services.appconfig.model.GetConfigurationRequest;
-import com.amazonaws.services.appconfig.model.GetConfigurationResult;
+import static org.whispersystems.textsecuregcm.metrics.MetricsUtil.name;
+
 import com.fasterxml.jackson.core.JsonProcessingException;
-import com.fasterxml.jackson.databind.DeserializationFeature;
-import com.fasterxml.jackson.databind.ObjectMapper;
-import com.fasterxml.jackson.dataformat.yaml.YAMLFactory;
 import com.google.common.annotations.VisibleForTesting;
-import org.apache.commons.lang3.StringUtils;
+import io.micrometer.core.instrument.Metrics;
+import java.time.Duration;
+import java.util.Optional;
+import java.util.Set;
+import java.util.concurrent.atomic.AtomicReference;
+import javax.validation.ConstraintViolation;
+import javax.validation.Validation;
+import javax.validation.Validator;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
-import org.whispersystems.textsecuregcm.configuration.dynamic.DynamicConfiguration;
+import org.whispersystems.textsecuregcm.util.SystemMapper;
 import org.whispersystems.textsecuregcm.util.Util;
+import software.amazon.awssdk.core.client.config.ClientOverrideConfiguration;
+import software.amazon.awssdk.services.appconfigdata.AppConfigDataClient;
+import software.amazon.awssdk.services.appconfigdata.model.GetLatestConfigurationRequest;
+import software.amazon.awssdk.services.appconfigdata.model.GetLatestConfigurationResponse;
+import software.amazon.awssdk.services.appconfigdata.model.StartConfigurationSessionRequest;
+import software.amazon.awssdk.services.appconfigdata.model.StartConfigurationSessionResponse;
 
-import java.nio.charset.StandardCharsets;
-import java.util.Optional;
-import java.util.UUID;
-import java.util.concurrent.atomic.AtomicReference;
+public class DynamicConfigurationManager<T> {
 
-public class DynamicConfigurationManager {
+  private final String application;
+  private final String environment;
+  private final String configurationName;
+  private final AppConfigDataClient appConfigClient;
+  private final Class<T> configurationClass;
 
-  private final String          application;
-  private final String          environment;
-  private final String          configurationName;
-  private final String          clientId;
-  private final AmazonAppConfig appConfigClient;
-
-  private final AtomicReference<DynamicConfiguration>   configuration    = new AtomicReference<>();
-  private final Logger                                  logger           = LoggerFactory.getLogger(DynamicConfigurationManager.class);
-
-  private GetConfigurationResult lastConfigResult;
-
+  // Set on initial config fetch
+  private final AtomicReference<T> configuration = new AtomicReference<>();
+  private String configurationToken = null;
   private boolean initialized = false;
 
-  public static final ObjectMapper OBJECT_MAPPER = new ObjectMapper(new YAMLFactory()).configure(DeserializationFeature.FAIL_ON_UNKNOWN_PROPERTIES, false);
+  private static final Validator VALIDATOR = Validation.buildDefaultValidatorFactory().getValidator();
 
-  public DynamicConfigurationManager(String application, String environment, String configurationName) {
-    this(AmazonAppConfigClient.builder()
-                              .withClientConfiguration(new ClientConfiguration().withClientExecutionTimeout(10000).withRequestTimeout(10000))
-                              .withCredentials(InstanceProfileCredentialsProvider.getInstance())
-                              .build(),
-         application, environment, configurationName, UUID.randomUUID().toString());
+  private static final String ERROR_COUNTER_NAME = name(DynamicConfigurationManager.class, "error");
+  private static final String ERROR_TYPE_TAG_NAME = "type";
+  private static final String CONFIG_CLASS_TAG_NAME = "configClass";
+
+  private static final Logger logger = LoggerFactory.getLogger(DynamicConfigurationManager.class);
+
+  public DynamicConfigurationManager(String application, String environment, String configurationName,
+      Class<T> configurationClass) {
+    this(AppConfigDataClient
+            .builder()
+            .overrideConfiguration(ClientOverrideConfiguration.builder()
+                .apiCallTimeout(Duration.ofSeconds(10))
+                .apiCallAttemptTimeout(Duration.ofSeconds(10)).build())
+            .build(),
+        application, environment, configurationName, configurationClass);
   }
 
   @VisibleForTesting
-  public DynamicConfigurationManager(AmazonAppConfig appConfigClient, String application, String environment, String configurationName, String clientId) {
-    this.appConfigClient   = appConfigClient;
-    this.application       = application;
-    this.environment       = environment;
+  DynamicConfigurationManager(AppConfigDataClient appConfigClient, String application, String environment,
+      String configurationName, Class<T> configurationClass) {
+    this.appConfigClient = appConfigClient;
+    this.application = application;
+    this.environment = environment;
     this.configurationName = configurationName;
-    this.clientId          = clientId;
+    this.configurationClass = configurationClass;
   }
 
-  public DynamicConfiguration getConfiguration() {
+  public T getConfiguration() {
     synchronized (this) {
-      while (!initialized) Util.wait(this);
+      while (!initialized) {
+        try {
+          this.wait();
+        } catch (final InterruptedException e) {
+          logger.warn("Interrupted while waiting for initial configuration", e);
+          throw new RuntimeException(e);
+        }
+      }
     }
-
     return configuration.get();
   }
 
   public void start() {
     configuration.set(retrieveInitialDynamicConfiguration());
-
     synchronized (this) {
       this.initialized = true;
       this.notifyAll();
@@ -76,8 +95,8 @@ public class DynamicConfigurationManager {
       while (true) {
         try {
           retrieveDynamicConfiguration().ifPresent(configuration::set);
-        } catch (Throwable t) {
-          logger.warn("Error retrieving dynamic configuration", t);
+        } catch (Exception e) {
+          logger.warn("Error retrieving dynamic configuration", e);
         }
 
         Util.sleep(5000);
@@ -88,40 +107,74 @@ public class DynamicConfigurationManager {
     workerThread.start();
   }
 
-  private Optional<DynamicConfiguration> retrieveDynamicConfiguration() throws JsonProcessingException {
-    final String previousVersion = lastConfigResult != null ? lastConfigResult.getConfigurationVersion() : null;
+  private Optional<T> retrieveDynamicConfiguration() throws JsonProcessingException {
+    if (configurationToken == null) {
+        logger.error("Invalid configuration token, will not be able to fetch configuration updates");
+    }
+    GetLatestConfigurationResponse latestConfiguration;
+    try {
+      latestConfiguration = appConfigClient.getLatestConfiguration(GetLatestConfigurationRequest.builder()
+          .configurationToken(configurationToken)
+          .build());
+      // token to use in the next fetch
+      configurationToken = latestConfiguration.nextPollConfigurationToken();
+      logger.debug("next token: {}", configurationToken);
+    } catch (final RuntimeException e) {
+      Metrics.counter(ERROR_COUNTER_NAME, ERROR_TYPE_TAG_NAME, "fetch").increment();
+      throw e;
+    }
 
-    lastConfigResult = appConfigClient.getConfiguration(new GetConfigurationRequest().withApplication(application)
-                                                                                     .withEnvironment(environment)
-                                                                                     .withConfiguration(configurationName)
-                                                                                     .withClientId(clientId)
-                                                                                     .withClientConfigurationVersion(previousVersion));
+    if (!latestConfiguration.configuration().asByteBuffer().hasRemaining()) {
+      // empty configuration means nothing has changed
+      return Optional.empty();
+    }
+    logger.info("Received new config of length {}, next configuration token: {}",
+        latestConfiguration.configuration().asByteBuffer().remaining(),
+        configurationToken);
 
-    final Optional<DynamicConfiguration> maybeDynamicConfiguration;
+    try {
+      return parseConfiguration(latestConfiguration.configuration().asUtf8String(), configurationClass);
+    } catch (final JsonProcessingException e) {
+      Metrics.counter(ERROR_COUNTER_NAME,
+          ERROR_TYPE_TAG_NAME, "parse",
+          CONFIG_CLASS_TAG_NAME, configurationClass.getName()).increment();
+      throw e;
+    }
+  }
 
-    if (!StringUtils.equals(lastConfigResult.getConfigurationVersion(), previousVersion)) {
-      logger.info("Received new config version: {}", lastConfigResult.getConfigurationVersion());
-      maybeDynamicConfiguration = Optional.of(OBJECT_MAPPER.readValue(StandardCharsets.UTF_8.decode(lastConfigResult.getContent().asReadOnlyBuffer()).toString(), DynamicConfiguration.class));
+  @VisibleForTesting
+  public static <T> Optional<T> parseConfiguration(final String configurationYaml, final Class<T> configurationClass)
+      throws JsonProcessingException {
+    final T configuration = SystemMapper.yamlMapper().readValue(configurationYaml, configurationClass);
+    final Set<ConstraintViolation<T>> violations = VALIDATOR.validate(configuration);
+
+    final Optional<T> maybeDynamicConfiguration;
+
+    if (violations.isEmpty()) {
+      maybeDynamicConfiguration = Optional.of(configuration);
     } else {
-      // No change since last version
+      logger.warn("Failed to validate configuration: {}", violations);
       maybeDynamicConfiguration = Optional.empty();
     }
 
     return maybeDynamicConfiguration;
   }
 
-  private DynamicConfiguration retrieveInitialDynamicConfiguration() {
+  private T retrieveInitialDynamicConfiguration() {
     for (;;) {
       try {
-        final Optional<DynamicConfiguration> maybeDynamicConfiguration = retrieveDynamicConfiguration();
-
-        if (maybeDynamicConfiguration.isPresent()) {
-          return maybeDynamicConfiguration.get();
-        } else {
-          throw new IllegalStateException("No initial configuration available");
+        if (configurationToken == null) {
+          // first time around, start the configuration session
+          final StartConfigurationSessionResponse startResponse = appConfigClient
+              .startConfigurationSession(StartConfigurationSessionRequest.builder()
+                  .applicationIdentifier(application)
+                  .environmentIdentifier(environment)
+                  .configurationProfileIdentifier(configurationName).build());
+          configurationToken = startResponse.initialConfigurationToken();
         }
-      } catch (Throwable t) {
-        logger.warn("Error retrieving initial dynamic configuration", t);
+        return retrieveDynamicConfiguration().orElseThrow(() -> new IllegalStateException("No initial configuration available"));
+      } catch (Exception e) {
+        logger.warn("Error retrieving initial dynamic configuration", e);
         Util.sleep(1000);
       }
     }

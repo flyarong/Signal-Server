@@ -1,50 +1,66 @@
 /*
- * Copyright 2013-2020 Signal Messenger, LLC
+ * Copyright 2013 Signal Messenger, LLC
  * SPDX-License-Identifier: AGPL-3.0-only
  */
 package org.whispersystems.textsecuregcm;
 
 import com.fasterxml.jackson.annotation.JsonProperty;
-import io.dropwizard.Configuration;
-import io.dropwizard.client.JerseyClientConfiguration;
-import org.whispersystems.textsecuregcm.configuration.AccountDatabaseCrawlerConfiguration;
-import org.whispersystems.textsecuregcm.configuration.ApnConfiguration;
-import org.whispersystems.textsecuregcm.configuration.AppConfigConfiguration;
-import org.whispersystems.textsecuregcm.configuration.AwsAttachmentsConfiguration;
-import org.whispersystems.textsecuregcm.configuration.CdnConfiguration;
-import org.whispersystems.textsecuregcm.configuration.DatabaseConfiguration;
-import org.whispersystems.textsecuregcm.configuration.DirectoryConfiguration;
-import org.whispersystems.textsecuregcm.configuration.DynamoDbConfiguration;
-import org.whispersystems.textsecuregcm.configuration.GcmConfiguration;
-import org.whispersystems.textsecuregcm.configuration.GcpAttachmentsConfiguration;
-import org.whispersystems.textsecuregcm.configuration.AccountsDatabaseConfiguration;
-import org.whispersystems.textsecuregcm.configuration.MaxDeviceConfiguration;
-import org.whispersystems.textsecuregcm.configuration.MessageCacheConfiguration;
-import org.whispersystems.textsecuregcm.configuration.MessageDynamoDbConfiguration;
-import org.whispersystems.textsecuregcm.configuration.MicrometerConfiguration;
-import org.whispersystems.textsecuregcm.configuration.PaymentsServiceConfiguration;
-import org.whispersystems.textsecuregcm.configuration.PushConfiguration;
-import org.whispersystems.textsecuregcm.configuration.RateLimitsConfiguration;
-import org.whispersystems.textsecuregcm.configuration.RecaptchaConfiguration;
-import org.whispersystems.textsecuregcm.configuration.RedisClusterConfiguration;
-import org.whispersystems.textsecuregcm.configuration.RedisConfiguration;
-import org.whispersystems.textsecuregcm.configuration.RemoteConfigConfiguration;
-import org.whispersystems.textsecuregcm.configuration.SecureBackupServiceConfiguration;
-import org.whispersystems.textsecuregcm.configuration.SecureStorageServiceConfiguration;
-import org.whispersystems.textsecuregcm.configuration.TestDeviceConfiguration;
-import org.whispersystems.textsecuregcm.configuration.TurnConfiguration;
-import org.whispersystems.textsecuregcm.configuration.TwilioConfiguration;
-import org.whispersystems.textsecuregcm.configuration.UnidentifiedDeliveryConfiguration;
-import org.whispersystems.textsecuregcm.configuration.VoiceVerificationConfiguration;
-import org.whispersystems.textsecuregcm.configuration.ZkConfig;
-import org.whispersystems.websocket.configuration.WebSocketConfiguration;
-
-import javax.validation.Valid;
-import javax.validation.constraints.NotNull;
+import io.dropwizard.core.Configuration;
+import java.time.Duration;
 import java.util.HashMap;
+import java.util.HashSet;
 import java.util.LinkedList;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
+import javax.validation.Valid;
+import javax.validation.constraints.NotNull;
+import org.whispersystems.textsecuregcm.attachments.TusConfiguration;
+import org.whispersystems.textsecuregcm.configuration.ApnConfiguration;
+import org.whispersystems.textsecuregcm.configuration.AppConfigConfiguration;
+import org.whispersystems.textsecuregcm.configuration.ArtServiceConfiguration;
+import org.whispersystems.textsecuregcm.configuration.AwsAttachmentsConfiguration;
+import org.whispersystems.textsecuregcm.configuration.BadgesConfiguration;
+import org.whispersystems.textsecuregcm.configuration.BraintreeConfiguration;
+import org.whispersystems.textsecuregcm.configuration.Cdn3StorageManagerConfiguration;
+import org.whispersystems.textsecuregcm.configuration.CdnConfiguration;
+import org.whispersystems.textsecuregcm.configuration.ClientCdnConfiguration;
+import org.whispersystems.textsecuregcm.configuration.ClientReleaseConfiguration;
+import org.whispersystems.textsecuregcm.configuration.DirectoryV2Configuration;
+import org.whispersystems.textsecuregcm.configuration.DogstatsdConfiguration;
+import org.whispersystems.textsecuregcm.configuration.DynamoDbClientConfiguration;
+import org.whispersystems.textsecuregcm.configuration.DynamoDbTables;
+import org.whispersystems.textsecuregcm.configuration.FcmConfiguration;
+import org.whispersystems.textsecuregcm.configuration.GcpAttachmentsConfiguration;
+import org.whispersystems.textsecuregcm.configuration.GenericZkConfig;
+import org.whispersystems.textsecuregcm.configuration.HCaptchaConfiguration;
+import org.whispersystems.textsecuregcm.configuration.LinkDeviceSecretConfiguration;
+import org.whispersystems.textsecuregcm.configuration.MaxDeviceConfiguration;
+import org.whispersystems.textsecuregcm.configuration.MessageByteLimitCardinalityEstimatorConfiguration;
+import org.whispersystems.textsecuregcm.configuration.MessageCacheConfiguration;
+import org.whispersystems.textsecuregcm.configuration.MonitoredS3ObjectConfiguration;
+import org.whispersystems.textsecuregcm.configuration.OneTimeDonationConfiguration;
+import org.whispersystems.textsecuregcm.configuration.PaymentsServiceConfiguration;
+import org.whispersystems.textsecuregcm.configuration.RecaptchaConfiguration;
+import org.whispersystems.textsecuregcm.configuration.RedisClusterConfiguration;
+import org.whispersystems.textsecuregcm.configuration.RedisConfiguration;
+import org.whispersystems.textsecuregcm.configuration.RegistrationServiceConfiguration;
+import org.whispersystems.textsecuregcm.configuration.RemoteConfigConfiguration;
+import org.whispersystems.textsecuregcm.configuration.ReportMessageConfiguration;
+import org.whispersystems.textsecuregcm.configuration.SecureStorageServiceConfiguration;
+import org.whispersystems.textsecuregcm.configuration.SecureValueRecovery2Configuration;
+import org.whispersystems.textsecuregcm.configuration.SecureValueRecovery3Configuration;
+import org.whispersystems.textsecuregcm.configuration.ShortCodeExpanderConfiguration;
+import org.whispersystems.textsecuregcm.configuration.SpamFilterConfiguration;
+import org.whispersystems.textsecuregcm.configuration.StripeConfiguration;
+import org.whispersystems.textsecuregcm.configuration.SubscriptionConfiguration;
+import org.whispersystems.textsecuregcm.configuration.TlsKeyStoreConfiguration;
+import org.whispersystems.textsecuregcm.configuration.TurnSecretConfiguration;
+import org.whispersystems.textsecuregcm.configuration.UnidentifiedDeliveryConfiguration;
+import org.whispersystems.textsecuregcm.configuration.VirtualThreadConfiguration;
+import org.whispersystems.textsecuregcm.configuration.ZkConfig;
+import org.whispersystems.textsecuregcm.limits.RateLimiterConfig;
+import org.whispersystems.websocket.configuration.WebSocketConfiguration;
 
 /** @noinspection MismatchedQueryAndUpdateOfCollection, WeakerAccess */
 public class WhisperServerConfiguration extends Configuration {
@@ -52,12 +68,27 @@ public class WhisperServerConfiguration extends Configuration {
   @NotNull
   @Valid
   @JsonProperty
-  private TwilioConfiguration twilio;
+  private TlsKeyStoreConfiguration tlsKeyStore;
 
   @NotNull
   @Valid
   @JsonProperty
-  private PushConfiguration push;
+  private StripeConfiguration stripe;
+
+  @NotNull
+  @Valid
+  @JsonProperty
+  private BraintreeConfiguration braintree;
+
+  @NotNull
+  @Valid
+  @JsonProperty
+  private DynamoDbClientConfiguration dynamoDbClientConfiguration;
+
+  @NotNull
+  @Valid
+  @JsonProperty
+  private DynamoDbTables dynamoDbTables;
 
   @NotNull
   @Valid
@@ -77,7 +108,17 @@ public class WhisperServerConfiguration extends Configuration {
   @NotNull
   @Valid
   @JsonProperty
-  private MicrometerConfiguration micrometer;
+  private ClientCdnConfiguration clientCdn;
+
+  @NotNull
+  @Valid
+  @JsonProperty
+  private Cdn3StorageManagerConfiguration cdn3StorageManager;
+
+  @NotNull
+  @Valid
+  @JsonProperty
+  private DogstatsdConfiguration dogstatsd = new DogstatsdConfiguration();
 
   @NotNull
   @Valid
@@ -97,17 +138,26 @@ public class WhisperServerConfiguration extends Configuration {
   @NotNull
   @Valid
   @JsonProperty
-  private DirectoryConfiguration directory;
+  private DirectoryV2Configuration directoryV2;
 
   @NotNull
   @Valid
   @JsonProperty
-  private AccountDatabaseCrawlerConfiguration accountDatabaseCrawler;
+  private SecureValueRecovery2Configuration svr2;
+  @NotNull
+  @Valid
+  @JsonProperty
+  private SecureValueRecovery3Configuration svr3;
 
   @NotNull
   @Valid
   @JsonProperty
   private RedisClusterConfiguration pushSchedulerCluster;
+
+  @NotNull
+  @Valid
+  @JsonProperty
+  private RedisClusterConfiguration rateLimitersCluster;
 
   @NotNull
   @Valid
@@ -122,22 +172,7 @@ public class WhisperServerConfiguration extends Configuration {
   @Valid
   @NotNull
   @JsonProperty
-  private MessageDynamoDbConfiguration messageDynamoDb;
-
-  @Valid
-  @NotNull
-  @JsonProperty
-  private DynamoDbConfiguration keysDynamoDb;
-
-  @Valid
-  @NotNull
-  @JsonProperty
-  private DatabaseConfiguration abuseDatabase;
-
-  @Valid
-  @NotNull
-  @JsonProperty
-  private List<TestDeviceConfiguration> testDevices = new LinkedList<>();
+  private Set<String> testDevices = new HashSet<>();
 
   @Valid
   @NotNull
@@ -147,17 +182,7 @@ public class WhisperServerConfiguration extends Configuration {
   @Valid
   @NotNull
   @JsonProperty
-  private AccountsDatabaseConfiguration accountsDatabase;
-
-  @Valid
-  @NotNull
-  @JsonProperty
-  private RateLimitsConfiguration limits = new RateLimitsConfiguration();
-
-  @Valid
-  @NotNull
-  @JsonProperty
-  private JerseyClientConfiguration httpClient = new JerseyClientConfiguration();
+  private Map<String, RateLimiterConfig> limits = new HashMap<>();
 
   @Valid
   @NotNull
@@ -167,12 +192,7 @@ public class WhisperServerConfiguration extends Configuration {
   @Valid
   @NotNull
   @JsonProperty
-  private TurnConfiguration turn;
-
-  @Valid
-  @NotNull
-  @JsonProperty
-  private GcmConfiguration gcm;
+  private FcmConfiguration fcm;
 
   @Valid
   @NotNull
@@ -187,12 +207,17 @@ public class WhisperServerConfiguration extends Configuration {
   @Valid
   @NotNull
   @JsonProperty
-  private VoiceVerificationConfiguration voiceVerification;
+  private RecaptchaConfiguration recaptcha;
 
   @Valid
   @NotNull
   @JsonProperty
-  private RecaptchaConfiguration recaptcha;
+  private HCaptchaConfiguration hCaptcha;
+
+  @Valid
+  @NotNull
+  @JsonProperty
+  private ShortCodeExpanderConfiguration shortCode;
 
   @Valid
   @NotNull
@@ -202,17 +227,27 @@ public class WhisperServerConfiguration extends Configuration {
   @Valid
   @NotNull
   @JsonProperty
-  private SecureBackupServiceConfiguration backupService;
-
-  @Valid
-  @NotNull
-  @JsonProperty
   private PaymentsServiceConfiguration paymentsService;
 
   @Valid
   @NotNull
   @JsonProperty
+  private ArtServiceConfiguration artService;
+
+  @Valid
+  @NotNull
+  @JsonProperty
   private ZkConfig zkConfig;
+
+  @Valid
+  @NotNull
+  @JsonProperty
+  private GenericZkConfig callingZkConfig;
+
+  @Valid
+  @NotNull
+  @JsonProperty
+  private GenericZkConfig backupsZkConfig;
 
   @Valid
   @NotNull
@@ -224,30 +259,120 @@ public class WhisperServerConfiguration extends Configuration {
   @JsonProperty
   private AppConfigConfiguration appConfig;
 
-  private Map<String, String> transparentDataIndex = new HashMap<>();
+  @Valid
+  @NotNull
+  @JsonProperty
+  private BadgesConfiguration badges;
+
+  @Valid
+  @JsonProperty
+  @NotNull
+  private SubscriptionConfiguration subscription;
+
+  @Valid
+  @JsonProperty
+  @NotNull
+  private OneTimeDonationConfiguration oneTimeDonations;
+
+  @Valid
+  @NotNull
+  @JsonProperty
+  private ReportMessageConfiguration reportMessage = new ReportMessageConfiguration();
+
+  @Valid
+  @JsonProperty
+  private SpamFilterConfiguration spamFilterConfiguration;
+
+  @Valid
+  @NotNull
+  @JsonProperty
+  private RegistrationServiceConfiguration registrationService;
+
+  @Valid
+  @NotNull
+  @JsonProperty
+  private TurnSecretConfiguration turn;
+
+  @Valid
+  @NotNull
+  @JsonProperty
+  private TusConfiguration tus;
+
+  @Valid
+  @NotNull
+  @JsonProperty
+  private ClientReleaseConfiguration clientRelease = new ClientReleaseConfiguration(Duration.ofHours(4));
+
+  @Valid
+  @NotNull
+  @JsonProperty
+  private MessageByteLimitCardinalityEstimatorConfiguration messageByteLimitCardinalityEstimator = new MessageByteLimitCardinalityEstimatorConfiguration(Duration.ofDays(1));
+
+  @Valid
+  @NotNull
+  @JsonProperty
+  private LinkDeviceSecretConfiguration linkDevice;
+
+  @Valid
+  @NotNull
+  @JsonProperty
+  private VirtualThreadConfiguration virtualThreadConfiguration = new VirtualThreadConfiguration(Duration.ofMillis(1));
+
+
+  @Valid
+  @NotNull
+  @JsonProperty
+  private MonitoredS3ObjectConfiguration maxmindCityDatabase;
+
+  @Valid
+  @NotNull
+  @JsonProperty
+  private MonitoredS3ObjectConfiguration callingTurnDnsRecords;
+
+  @Valid
+  @NotNull
+  @JsonProperty
+  private MonitoredS3ObjectConfiguration callingTurnPerformanceTable;
+
+  @Valid
+  @NotNull
+  @JsonProperty
+  private MonitoredS3ObjectConfiguration callingTurnManualTable;
+
+  public TlsKeyStoreConfiguration getTlsKeyStoreConfiguration() {
+    return tlsKeyStore;
+  }
+
+  public StripeConfiguration getStripe() {
+    return stripe;
+  }
+
+  public BraintreeConfiguration getBraintree() {
+    return braintree;
+  }
+
+  public DynamoDbClientConfiguration getDynamoDbClientConfiguration() {
+    return dynamoDbClientConfiguration;
+  }
+
+  public DynamoDbTables getDynamoDbTables() {
+    return dynamoDbTables;
+  }
 
   public RecaptchaConfiguration getRecaptchaConfiguration() {
     return recaptcha;
   }
 
-  public VoiceVerificationConfiguration getVoiceVerificationConfiguration() {
-    return voiceVerification;
+  public HCaptchaConfiguration getHCaptchaConfiguration() {
+    return hCaptcha;
+  }
+
+  public ShortCodeExpanderConfiguration getShortCodeRetrieverConfiguration() {
+    return shortCode;
   }
 
   public WebSocketConfiguration getWebSocketConfiguration() {
     return webSocket;
-  }
-
-  public TwilioConfiguration getTwilioConfiguration() {
-    return twilio;
-  }
-
-  public PushConfiguration getPushConfiguration() {
-    return push;
-  }
-
-  public JerseyClientConfiguration getJerseyClientConfiguration() {
-    return httpClient;
   }
 
   public AwsAttachmentsConfiguration getAwsAttachmentsConfiguration() {
@@ -270,16 +395,20 @@ public class WhisperServerConfiguration extends Configuration {
     return metricsCluster;
   }
 
-  public DirectoryConfiguration getDirectoryConfiguration() {
-    return directory;
+
+  public SecureValueRecovery2Configuration getSvr2Configuration() {
+    return svr2;
+  }
+  public SecureValueRecovery3Configuration getSvr3Configuration() {
+    return svr3;
+  }
+
+  public DirectoryV2Configuration getDirectoryV2Configuration() {
+    return directoryV2;
   }
 
   public SecureStorageServiceConfiguration getSecureStorageServiceConfiguration() {
     return storageService;
-  }
-
-  public AccountDatabaseCrawlerConfiguration getAccountDatabaseCrawlerConfiguration() {
-    return accountDatabaseCrawler;
   }
 
   public MessageCacheConfiguration getMessageCacheConfiguration() {
@@ -294,32 +423,16 @@ public class WhisperServerConfiguration extends Configuration {
     return pushSchedulerCluster;
   }
 
-  public MessageDynamoDbConfiguration getMessageDynamoDbConfiguration() {
-    return messageDynamoDb;
+  public RedisClusterConfiguration getRateLimitersCluster() {
+    return rateLimitersCluster;
   }
 
-  public DynamoDbConfiguration getKeysDynamoDbConfiguration() {
-    return keysDynamoDb;
-  }
-
-  public DatabaseConfiguration getAbuseDatabaseConfiguration() {
-    return abuseDatabase;
-  }
-
-  public AccountsDatabaseConfiguration getAccountsDatabaseConfiguration() {
-    return accountsDatabase;
-  }
-
-  public RateLimitsConfiguration getLimitsConfiguration() {
+  public Map<String, RateLimiterConfig> getLimitsConfiguration() {
     return limits;
   }
 
-  public TurnConfiguration getTurnConfiguration() {
-    return turn;
-  }
-
-  public GcmConfiguration getGcmConfiguration() {
-    return gcm;
+  public FcmConfiguration getFcmConfiguration() {
+    return fcm;
   }
 
   public ApnConfiguration getApnConfiguration() {
@@ -330,23 +443,24 @@ public class WhisperServerConfiguration extends Configuration {
     return cdn;
   }
 
-  public MicrometerConfiguration getMicrometerConfiguration() {
-    return micrometer;
+  public ClientCdnConfiguration getClientCdnConfiguration() {
+    return clientCdn;
+  }
+
+  public Cdn3StorageManagerConfiguration getCdn3StorageManagerConfiguration() {
+    return cdn3StorageManager;
+  }
+
+  public DogstatsdConfiguration getDatadogConfiguration() {
+    return dogstatsd;
   }
 
   public UnidentifiedDeliveryConfiguration getDeliveryCertificate() {
     return unidentifiedDelivery;
   }
 
-  public Map<String, Integer> getTestDevices() {
-    Map<String, Integer> results = new HashMap<>();
-
-    for (TestDeviceConfiguration testDeviceConfiguration : testDevices) {
-      results.put(testDeviceConfiguration.getNumber(),
-                  testDeviceConfiguration.getCode());
-    }
-
-    return results;
+  public Set<String> getTestDevices() {
+    return testDevices;
   }
 
   public Map<String, Integer> getMaxDevices() {
@@ -360,20 +474,24 @@ public class WhisperServerConfiguration extends Configuration {
     return results;
   }
 
-  public Map<String, String> getTransparentDataIndex() {
-    return transparentDataIndex;
-  }
-
-  public SecureBackupServiceConfiguration getSecureBackupServiceConfiguration() {
-    return backupService;
-  }
-
   public PaymentsServiceConfiguration getPaymentsServiceConfiguration() {
     return paymentsService;
   }
 
+  public ArtServiceConfiguration getArtServiceConfiguration() {
+    return artService;
+  }
+
   public ZkConfig getZkConfig() {
     return zkConfig;
+  }
+
+  public GenericZkConfig getCallingZkConfig() {
+    return callingZkConfig;
+  }
+
+  public GenericZkConfig getBackupsZkConfig() {
+    return backupsZkConfig;
   }
 
   public RemoteConfigConfiguration getRemoteConfigConfiguration() {
@@ -382,5 +500,69 @@ public class WhisperServerConfiguration extends Configuration {
 
   public AppConfigConfiguration getAppConfig() {
     return appConfig;
+  }
+
+  public BadgesConfiguration getBadges() {
+    return badges;
+  }
+
+  public SubscriptionConfiguration getSubscription() {
+    return subscription;
+  }
+
+  public OneTimeDonationConfiguration getOneTimeDonations() {
+    return oneTimeDonations;
+  }
+
+  public ReportMessageConfiguration getReportMessageConfiguration() {
+    return reportMessage;
+  }
+
+  public SpamFilterConfiguration getSpamFilterConfiguration() {
+    return spamFilterConfiguration;
+  }
+
+  public RegistrationServiceConfiguration getRegistrationServiceConfiguration() {
+    return registrationService;
+  }
+
+  public TurnSecretConfiguration getTurnSecretConfiguration() {
+    return turn;
+  }
+
+  public TusConfiguration getTus() {
+    return tus;
+  }
+
+  public ClientReleaseConfiguration getClientReleaseConfiguration() {
+    return clientRelease;
+  }
+
+  public MessageByteLimitCardinalityEstimatorConfiguration getMessageByteLimitCardinalityEstimator() {
+    return messageByteLimitCardinalityEstimator;
+  }
+
+  public LinkDeviceSecretConfiguration getLinkDeviceSecretConfiguration() {
+    return linkDevice;
+  }
+
+  public VirtualThreadConfiguration getVirtualThreadConfiguration() {
+    return virtualThreadConfiguration;
+  }
+
+  public MonitoredS3ObjectConfiguration getMaxmindCityDatabase() {
+    return maxmindCityDatabase;
+  }
+
+  public MonitoredS3ObjectConfiguration getCallingTurnDnsRecords() {
+    return callingTurnDnsRecords;
+  }
+
+  public MonitoredS3ObjectConfiguration getCallingTurnPerformanceTable() {
+    return callingTurnPerformanceTable;
+  }
+
+  public MonitoredS3ObjectConfiguration getCallingTurnManualTable() {
+    return callingTurnManualTable;
   }
 }

@@ -1,23 +1,20 @@
 /*
- * Copyright 2013-2020 Signal Messenger, LLC
+ * Copyright 2013-2021 Signal Messenger, LLC
  * SPDX-License-Identifier: AGPL-3.0-only
  */
 
 package org.whispersystems.textsecuregcm.storage;
 
-import static org.junit.Assert.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertTimeoutPreemptively;
+import static org.junit.jupiter.api.Assertions.fail;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.when;
 
-import com.amazonaws.services.dynamodbv2.document.DynamoDB;
-import com.amazonaws.services.dynamodbv2.document.Item;
-import com.amazonaws.services.dynamodbv2.document.ItemCollection;
-import com.amazonaws.services.dynamodbv2.document.ScanOutcome;
-import com.amazonaws.services.dynamodbv2.document.Table;
-import com.amazonaws.services.dynamodbv2.document.spec.ScanSpec;
 import com.google.protobuf.ByteString;
+import com.google.protobuf.InvalidProtocolBufferException;
 import io.lettuce.core.cluster.SlotHash;
-import java.nio.ByteBuffer;
+import java.time.Clock;
 import java.time.Duration;
 import java.time.Instant;
 import java.util.ArrayList;
@@ -29,155 +26,171 @@ import java.util.concurrent.Executors;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 import org.apache.commons.lang3.RandomStringUtils;
-import org.junit.After;
-import org.junit.Before;
-import org.junit.Rule;
-import org.junit.Test;
+import org.junit.jupiter.api.AfterEach;
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.extension.RegisterExtension;
 import org.whispersystems.textsecuregcm.configuration.dynamic.DynamicConfiguration;
 import org.whispersystems.textsecuregcm.entities.MessageProtos;
-import org.whispersystems.textsecuregcm.metrics.PushLatencyManager;
-import org.whispersystems.textsecuregcm.redis.AbstractRedisClusterTest;
-import org.whispersystems.textsecuregcm.tests.util.MessagesDynamoDbRule;
+import org.whispersystems.textsecuregcm.push.ClientPresenceManager;
+import org.whispersystems.textsecuregcm.redis.RedisClusterExtension;
+import org.whispersystems.textsecuregcm.storage.KeysManager;
+import org.whispersystems.textsecuregcm.storage.DynamoDbExtensionSchema.Tables;
+import reactor.core.scheduler.Scheduler;
+import reactor.core.scheduler.Schedulers;
+import software.amazon.awssdk.services.dynamodb.DynamoDbClient;
+import software.amazon.awssdk.services.dynamodb.model.ScanRequest;
 
-public class MessagePersisterIntegrationTest extends AbstractRedisClusterTest {
+class MessagePersisterIntegrationTest {
 
-    @Rule
-    public MessagesDynamoDbRule messagesDynamoDbRule = new MessagesDynamoDbRule();
+  @RegisterExtension
+  static final DynamoDbExtension DYNAMO_DB_EXTENSION = new DynamoDbExtension(Tables.MESSAGES);
 
-    private ExecutorService  notificationExecutorService;
-    private MessagesCache    messagesCache;
-    private MessagesManager  messagesManager;
-    private MessagePersister messagePersister;
-    private Account          account;
+  @RegisterExtension
+  static final RedisClusterExtension REDIS_CLUSTER_EXTENSION = RedisClusterExtension.builder().build();
 
-    private static final Duration PERSIST_DELAY = Duration.ofMinutes(10);
+  private ExecutorService notificationExecutorService;
+  private Scheduler messageDeliveryScheduler;
+  private ExecutorService messageDeletionExecutorService;
+  private MessagesCache messagesCache;
+  private MessagesManager messagesManager;
+  private MessagePersister messagePersister;
+  private Account account;
 
-    @Before
-    @Override
-    public void setUp() throws Exception {
-        super.setUp();
+  private static final Duration PERSIST_DELAY = Duration.ofMinutes(10);
 
-        getRedisCluster().useCluster(connection -> {
-            connection.sync().flushall();
-            connection.sync().upstream().commands().configSet("notify-keyspace-events", "K$glz");
-        });
+  @BeforeEach
+  void setUp() throws Exception {
+    REDIS_CLUSTER_EXTENSION.getRedisCluster().useCluster(connection -> {
+      connection.sync().flushall();
+      connection.sync().upstream().commands().configSet("notify-keyspace-events", "K$glz");
+    });
 
-        final MessagesDynamoDb messagesDynamoDb = new MessagesDynamoDb(messagesDynamoDbRule.getDynamoDB(), MessagesDynamoDbRule.TABLE_NAME, Duration.ofDays(7));
-        final AccountsManager accountsManager = mock(AccountsManager.class);
-        final DynamicConfigurationManager dynamicConfigurationManager = mock(DynamicConfigurationManager.class);
+    @SuppressWarnings("unchecked") final DynamicConfigurationManager<DynamicConfiguration> dynamicConfigurationManager =
+        mock(DynamicConfigurationManager.class);
 
-        notificationExecutorService = Executors.newSingleThreadExecutor();
-        messagesCache               = new MessagesCache(getRedisCluster(), getRedisCluster(), notificationExecutorService);
-        messagesManager             = new MessagesManager(messagesDynamoDb, messagesCache, mock(PushLatencyManager.class));
-        messagePersister            = new MessagePersister(messagesCache, messagesManager, accountsManager, dynamicConfigurationManager, PERSIST_DELAY);
+    when(dynamicConfigurationManager.getConfiguration()).thenReturn(new DynamicConfiguration());
 
-        account = mock(Account.class);
+    messageDeliveryScheduler = Schedulers.newBoundedElastic(10, 10_000, "messageDelivery");
+    messageDeletionExecutorService = Executors.newSingleThreadExecutor();
+    final MessagesDynamoDb messagesDynamoDb = new MessagesDynamoDb(DYNAMO_DB_EXTENSION.getDynamoDbClient(),
+        DYNAMO_DB_EXTENSION.getDynamoDbAsyncClient(), Tables.MESSAGES.tableName(), Duration.ofDays(14),
+        messageDeletionExecutorService);
+    final AccountsManager accountsManager = mock(AccountsManager.class);
 
-        final UUID accountUuid = UUID.randomUUID();
+    notificationExecutorService = Executors.newSingleThreadExecutor();
+    messagesCache = new MessagesCache(REDIS_CLUSTER_EXTENSION.getRedisCluster(),
+        REDIS_CLUSTER_EXTENSION.getRedisCluster(), notificationExecutorService,
+        messageDeliveryScheduler, messageDeletionExecutorService, Clock.systemUTC());
+    messagesManager = new MessagesManager(messagesDynamoDb, messagesCache, mock(ReportMessageManager.class),
+        messageDeletionExecutorService);
+    messagePersister = new MessagePersister(messagesCache, messagesManager, accountsManager,
+        mock(ClientPresenceManager.class), mock(KeysManager.class), dynamicConfigurationManager, PERSIST_DELAY, 1,
+        Executors.newSingleThreadExecutor());
 
-        when(account.getNumber()).thenReturn("+18005551234");
-        when(account.getUuid()).thenReturn(accountUuid);
-        when(accountsManager.get(accountUuid)).thenReturn(Optional.of(account));
-        when(dynamicConfigurationManager.getConfiguration()).thenReturn(new DynamicConfiguration());
+    account = mock(Account.class);
 
-        messagesCache.start();
-    }
+    final UUID accountUuid = UUID.randomUUID();
 
-    @After
-    @Override
-    public void tearDown() throws Exception {
-        super.tearDown();
+    when(account.getNumber()).thenReturn("+18005551234");
+    when(account.getUuid()).thenReturn(accountUuid);
+    when(accountsManager.getByAccountIdentifier(accountUuid)).thenReturn(Optional.of(account));
 
-        notificationExecutorService.shutdown();
-        notificationExecutorService.awaitTermination(15, TimeUnit.SECONDS);
-    }
+    when(dynamicConfigurationManager.getConfiguration()).thenReturn(new DynamicConfiguration());
 
-    @Test(timeout = 15_000)
-    public void testScheduledPersistMessages() throws Exception {
-        final int                          messageCount     = 377;
-        final List<MessageProtos.Envelope> expectedMessages = new ArrayList<>(messageCount);
-        final Instant                      now              = Instant.now();
+    messagesCache.start();
+  }
 
-        for (int i = 0; i < messageCount; i++) {
-            final UUID messageGuid = UUID.randomUUID();
-            final long timestamp   = now.minus(PERSIST_DELAY.multipliedBy(2)).toEpochMilli() + i;
+  @AfterEach
+  void tearDown() throws Exception {
+    notificationExecutorService.shutdown();
+    notificationExecutorService.awaitTermination(15, TimeUnit.SECONDS);
 
-            final MessageProtos.Envelope message = generateRandomMessage(messageGuid, timestamp);
+    messageDeletionExecutorService.shutdown();
+    messageDeletionExecutorService.awaitTermination(15, TimeUnit.SECONDS);
 
-            messagesCache.insert(messageGuid, account.getUuid(), 1, message);
-            expectedMessages.add(message);
+    messageDeliveryScheduler.dispose();
+  }
+
+  @Test
+  void testScheduledPersistMessages() {
+
+    final int messageCount = 377;
+    final List<MessageProtos.Envelope> expectedMessages = new ArrayList<>(messageCount);
+    final Instant now = Instant.now();
+
+    assertTimeoutPreemptively(Duration.ofSeconds(15), () -> {
+
+      for (int i = 0; i < messageCount; i++) {
+        final UUID messageGuid = UUID.randomUUID();
+        final long timestamp = now.minus(PERSIST_DELAY.multipliedBy(2)).toEpochMilli() + i;
+
+        final MessageProtos.Envelope message = generateRandomMessage(messageGuid, timestamp);
+
+        messagesCache.insert(messageGuid, account.getUuid(), Device.PRIMARY_ID, message);
+        expectedMessages.add(message);
+      }
+
+      REDIS_CLUSTER_EXTENSION.getRedisCluster()
+          .useCluster(connection -> connection.sync().set(MessagesCache.NEXT_SLOT_TO_PERSIST_KEY,
+              String.valueOf(
+                  SlotHash.getSlot(MessagesCache.getMessageQueueKey(account.getUuid(), Device.PRIMARY_ID)) - 1)));
+
+      final AtomicBoolean messagesPersisted = new AtomicBoolean(false);
+
+      messagesManager.addMessageAvailabilityListener(account.getUuid(), Device.PRIMARY_ID,
+          new MessageAvailabilityListener() {
+        @Override
+        public boolean handleNewMessagesAvailable() {
+          return true;
         }
 
-        getRedisCluster().useCluster(connection -> connection.sync().set(MessagesCache.NEXT_SLOT_TO_PERSIST_KEY, String.valueOf(SlotHash.getSlot(MessagesCache.getMessageQueueKey(account.getUuid(), 1)) - 1)));
+        @Override
+        public boolean handleMessagesPersisted() {
+          synchronized (messagesPersisted) {
+            messagesPersisted.set(true);
+            messagesPersisted.notifyAll();
+            return true;
+          }
+        }
+      });
 
-        final AtomicBoolean messagesPersisted = new AtomicBoolean(false);
+      messagePersister.start();
 
-        messagesManager.addMessageAvailabilityListener(account.getUuid(), 1, new MessageAvailabilityListener() {
-            @Override
-            public void handleNewMessagesAvailable() {
-            }
+      synchronized (messagesPersisted) {
+        while (!messagesPersisted.get()) {
+          messagesPersisted.wait();
+        }
+      }
 
-            @Override
-            public void handleNewEphemeralMessageAvailable() {
-            }
+      messagePersister.stop();
 
-            @Override
-            public void handleMessagesPersisted() {
-                synchronized (messagesPersisted) {
-                    messagesPersisted.set(true);
-                    messagesPersisted.notifyAll();
+      DynamoDbClient dynamoDB = DYNAMO_DB_EXTENSION.getDynamoDbClient();
+
+      final List<MessageProtos.Envelope> persistedMessages =
+          dynamoDB.scan(ScanRequest.builder().tableName(Tables.MESSAGES.tableName()).build()).items().stream()
+              .map(item -> {
+                try {
+                  return MessagesDynamoDb.convertItemToEnvelope(item);
+                } catch (InvalidProtocolBufferException e) {
+                  fail("Could not parse stored message", e);
+                  return null;
                 }
-            }
-        });
+              })
+              .toList();
 
-        messagePersister.start();
+      assertEquals(expectedMessages, persistedMessages);
+    });
+  }
 
-        synchronized (messagesPersisted) {
-            while (!messagesPersisted.get()) {
-                messagesPersisted.wait();
-            }
-        }
-
-        messagePersister.stop();
-
-        final List<MessageProtos.Envelope> persistedMessages = new ArrayList<>(messageCount);
-
-        DynamoDB dynamoDB = messagesDynamoDbRule.getDynamoDB();
-        Table table = dynamoDB.getTable(MessagesDynamoDbRule.TABLE_NAME);
-        final ItemCollection<ScanOutcome> scan = table.scan(new ScanSpec());
-        for (Item item : scan) {
-            persistedMessages.add(MessageProtos.Envelope.newBuilder()
-                                                        .setServerGuid(convertBinaryToUuid(item.getBinary("U")).toString())
-                                                        .setType(MessageProtos.Envelope.Type.valueOf(item.getInt("T")))
-                                                        .setTimestamp(item.getLong("TS"))
-                                                        .setServerTimestamp(extractServerTimestamp(item.getBinary("S")))
-                                                        .setContent(ByteString.copyFrom(item.getBinary("C")))
-                                                        .build());
-        }
-
-        assertEquals(expectedMessages, persistedMessages);
-    }
-
-    private static UUID convertBinaryToUuid(byte[] bytes) {
-        ByteBuffer bb = ByteBuffer.wrap(bytes);
-        long msb = bb.getLong();
-        long lsb = bb.getLong();
-        return new UUID(msb, lsb);
-    }
-
-    private static long extractServerTimestamp(byte[] bytes) {
-        ByteBuffer bb = ByteBuffer.wrap(bytes);
-        bb.getLong();
-        return bb.getLong();
-    }
-
-    private MessageProtos.Envelope generateRandomMessage(final UUID messageGuid, final long timestamp) {
-        return MessageProtos.Envelope.newBuilder()
-                .setTimestamp(timestamp)
-                .setServerTimestamp(timestamp)
-                .setContent(ByteString.copyFromUtf8(RandomStringUtils.randomAlphanumeric(256)))
-                .setType(MessageProtos.Envelope.Type.CIPHERTEXT)
-                .setServerGuid(messageGuid.toString())
-                .build();
-    }
+  private MessageProtos.Envelope generateRandomMessage(final UUID messageGuid, final long serverTimestamp) {
+    return MessageProtos.Envelope.newBuilder()
+        .setTimestamp(serverTimestamp * 2) // client timestamp may not be accurate
+        .setServerTimestamp(serverTimestamp)
+        .setContent(ByteString.copyFromUtf8(RandomStringUtils.randomAlphanumeric(256)))
+        .setType(MessageProtos.Envelope.Type.CIPHERTEXT)
+        .setServerGuid(messageGuid.toString())
+        .setDestinationUuid(UUID.randomUUID().toString())
+        .build();
+  }
 }

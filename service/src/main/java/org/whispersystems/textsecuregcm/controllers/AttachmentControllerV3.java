@@ -1,83 +1,59 @@
 /*
- * Copyright 2013-2020 Signal Messenger, LLC
+ * Copyright 2013 Signal Messenger, LLC
  * SPDX-License-Identifier: AGPL-3.0-only
  */
 
 package org.whispersystems.textsecuregcm.controllers;
 
-import com.codahale.metrics.annotation.Timed;
 import io.dropwizard.auth.Auth;
-import org.whispersystems.textsecuregcm.entities.AttachmentDescriptorV3;
-import org.whispersystems.textsecuregcm.gcp.CanonicalRequest;
-import org.whispersystems.textsecuregcm.gcp.CanonicalRequestGenerator;
-import org.whispersystems.textsecuregcm.gcp.CanonicalRequestSigner;
-import org.whispersystems.textsecuregcm.limits.RateLimiter;
-import org.whispersystems.textsecuregcm.limits.RateLimiters;
-import org.whispersystems.textsecuregcm.storage.Account;
-
+import io.swagger.v3.oas.annotations.tags.Tag;
+import java.io.IOException;
+import java.security.InvalidKeyException;
+import java.security.SecureRandom;
+import java.security.spec.InvalidKeySpecException;
+import java.util.Base64;
 import javax.annotation.Nonnull;
 import javax.ws.rs.GET;
 import javax.ws.rs.Path;
 import javax.ws.rs.Produces;
 import javax.ws.rs.core.MediaType;
-import java.io.IOException;
-import java.security.InvalidKeyException;
-import java.security.SecureRandom;
-import java.time.ZoneOffset;
-import java.time.ZonedDateTime;
-import java.util.Base64;
-import java.util.HashMap;
-import java.util.Map;
+import org.whispersystems.textsecuregcm.attachments.AttachmentGenerator;
+import org.whispersystems.textsecuregcm.attachments.GcsAttachmentGenerator;
+import org.whispersystems.textsecuregcm.auth.AuthenticatedAccount;
+import org.whispersystems.textsecuregcm.entities.AttachmentDescriptorV3;
+import org.whispersystems.textsecuregcm.limits.RateLimiter;
+import org.whispersystems.textsecuregcm.limits.RateLimiters;
+import org.whispersystems.websocket.auth.ReadOnly;
 
 @Path("/v3/attachments")
-public class AttachmentControllerV3 extends AttachmentControllerBase {
+@Tag(name = "Attachments")
+public class AttachmentControllerV3 {
 
   @Nonnull
   private final RateLimiter rateLimiter;
 
   @Nonnull
-  private final CanonicalRequestGenerator canonicalRequestGenerator;
-
-  @Nonnull
-  private final CanonicalRequestSigner canonicalRequestSigner;
+  private final GcsAttachmentGenerator gcsAttachmentGenerator;
 
   @Nonnull
   private final SecureRandom secureRandom;
 
-  public AttachmentControllerV3(@Nonnull RateLimiters rateLimiters, @Nonnull String domain, @Nonnull String email, int maxSizeInBytes, @Nonnull String pathPrefix, @Nonnull String rsaSigningKey)
-          throws IOException, InvalidKeyException {
-    this.rateLimiter               = rateLimiters.getAttachmentLimiter();
-    this.canonicalRequestGenerator = new CanonicalRequestGenerator(domain, email, maxSizeInBytes, pathPrefix);
-    this.canonicalRequestSigner    = new CanonicalRequestSigner(rsaSigningKey);
-    this.secureRandom              = new SecureRandom();
+  public AttachmentControllerV3(@Nonnull RateLimiters rateLimiters, @Nonnull GcsAttachmentGenerator gcsAttachmentGenerator)
+      throws IOException, InvalidKeyException, InvalidKeySpecException {
+    this.rateLimiter = rateLimiters.getAttachmentLimiter();
+    this.gcsAttachmentGenerator = gcsAttachmentGenerator;
+    this.secureRandom = new SecureRandom();
   }
 
-  @Timed
   @GET
   @Produces(MediaType.APPLICATION_JSON)
   @Path("/form/upload")
-  public AttachmentDescriptorV3 getAttachmentUploadForm(@Auth Account account) throws RateLimitExceededException {
-    rateLimiter.validate(account.getNumber());
-
-    final ZonedDateTime now                 = ZonedDateTime.now(ZoneOffset.UTC);
-    final String key                        = generateAttachmentKey();
-    final CanonicalRequest canonicalRequest = canonicalRequestGenerator.createFor(key, now);
-
-    return new AttachmentDescriptorV3(2, key, getHeaderMap(canonicalRequest), getSignedUploadLocation(canonicalRequest));
-  }
-
-  private String getSignedUploadLocation(@Nonnull CanonicalRequest canonicalRequest) {
-    return "https://" + canonicalRequest.getDomain() + canonicalRequest.getResourcePath()
-            + '?' + canonicalRequest.getCanonicalQuery()
-            + "&X-Goog-Signature=" + canonicalRequestSigner.sign(canonicalRequest);
-  }
-
-  private static Map<String, String> getHeaderMap(@Nonnull CanonicalRequest canonicalRequest) {
-    Map<String, String> result = new HashMap<>(3);
-    result.put("host", canonicalRequest.getDomain());
-    result.put("x-goog-content-length-range", "1," + canonicalRequest.getMaxSizeInBytes());
-    result.put("x-goog-resumable", "start");
-    return result;
+  public AttachmentDescriptorV3 getAttachmentUploadForm(@ReadOnly @Auth AuthenticatedAccount auth)
+      throws RateLimitExceededException {
+    rateLimiter.validate(auth.getAccount().getUuid());
+    final String key = generateAttachmentKey();
+    final AttachmentGenerator.Descriptor descriptor = this.gcsAttachmentGenerator.generateAttachment(key);
+    return new AttachmentDescriptorV3(2, key, descriptor.headers(), descriptor.signedUploadLocation());
   }
 
   private String generateAttachmentKey() {
